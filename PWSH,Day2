@@ -1,0 +1,50 @@
+ARRAYS
+
+$x = Get-Process
+$a = "cat dog"
+($x).GetType()
+$x -is [array]
+$x.count
+
+Creating arrays
+  -$array1 = 1,5,"dig",7,2.33,3,8,(get-date)
+  -$array = @()
+  -$array2 = -10..10
+
+Referencing array by index
+  -$array2[4]
+  -$array2[4..12]
+
+Jagged Arrays
+  $jagarray = "joe", "jim", "jan", (1, ('apple', 'pear'), 3), "jay"
+  $jagarray[3][1] ##calls index three, sublist index 1, "apple" and "pear"##
+  $jagarray[3][1][0]
+
+Appending to Array
+  $a = 1,2,3
+  $a += @(4,5,6)
+
+Multi-Dimensional Arrays
+  $TargetingArray = @(
+    (35.7219, 51.3347, "Tehran"),
+    (39.9042, 116.4074, "Bejing"),
+    (39.0738, 125.8198. "Pyongyang"),
+    (33.5138, 36.2765, "Damascus")
+  )
+
+  foreach ($line in $TargetingArray){
+    if ($line[2] -eq 'Bejing'){
+        Write-Output $line
+      }
+  }
+
+____________________________________________________________________________________________
+HASH TABLES
+
+$mylist = @{First = "John"; Last = "Doe"; Mid = "Bon"; Age = 35}
+$mylist["Last"]
+$mylist.First
+$mylist["First", "Mid", "Last"]
+$mylist.Keys
+$mylist.Values
+$mylist["Location"] = "Germany"
