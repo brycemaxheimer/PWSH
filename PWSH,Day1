@@ -1,0 +1,21 @@
+xfreerdp /u:student /v:x.x.x.x -dynamic-resolution +glyph-cache +clipboard
+
+get-command ##lists all commands##
+get-verb ##lists all verbs##
+get-command -Verb get ##lists all commands with verb get##
+get-command -Noun Process ##lists all commands with noun process##
+Get-Process ##lists all active processes##
+
+Get-Eventlog -logname 'Windows PowerShell' -Verbose
+Get-ChildItem -Path C:\users\student\desktop
+Get-Help / Update-Help ##lists 'man' page for command / gives most recent help page##
+Get-Help Get-Printer -full ##lists 'man' page for command plus examples
+get-help *ip* ##allows all commands containing the wildcard to be searched##
+get-help about_* ##lists all about commands, about commands are like better man pages | can add -ShowWindow to       
+                 ##export to external viewer##
+
+
+
+
+
+
