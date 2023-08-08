@@ -38,7 +38,7 @@ Multi-Dimensional Arrays
       }
   }
 
-____________________________________________________________________________________________
+_________________________________________________________________________________________________________________
 HASH TABLES
 
 $mylist = @{First = "John"; Last = "Doe"; Mid = "Bon"; Age = 35}
@@ -48,3 +48,32 @@ $mylist["First", "Mid", "Last"]
 $mylist.Keys
 $mylist.Values
 $mylist["Location"] = "Germany"
+
+
+$array = @(( get-random -minimum -10 -maximum 0)..( get-random -minimum 1 -maximum 20 ))
+
+echo $array
+
+[array]::Reverse($array)
+echo $array
+_________________________________________________________________________________________________________________
+
+$employee1 = @{First = "Mary"; Last = "Hopper"; ID = "001"; Job = "Software Lead"}
+$employee2 = @{First = "John"; Last = "Williams"; ID = "002"; Job = "Web Developer"}
+$employee3 = @{First = "Alex"; Last = "Moran"; ID = "003"; Job = "Software Developer"}
+
+$employee1["Username"] = "mhopper001"
+$employee2["Username"] = "jwilliams002"
+$employee2["Username"] = "amoran003"
+
+$employee1["Status"] = "Management"
+$employee2["Status"] = "Intermediate"
+$employee3["Status"] = "Entry Level"
+
+cls
+
+echo $employee1 `n
+
+echo $employee2 `n
+
+echo $employee3
