@@ -36,41 +36,41 @@ Write-host ##prints to the screen##
 _____________________________________________________________________________________________________________________
 FIND CMDLETS
 
-update-help
+update-help ##Ensure that you have the latest copy of help by updating your help system.##
 
-Get-Process, Start-Process, Stop-Process
+Get-Process, Start-Process, Stop-Process ##Which cmdlets deal with the viewing/manipulating of processes?##
 
-Get-Service
+Get-Service ##Display a list of services installed on your local computer##
 
-Write-Host, write
+Write-Host, write, write-output ##What cmdlets are used to write or output objects or text to the screen##
 
-Get-Variable, dir variable:, $c = <value>
+Get-Variable, dir variable:, $c = <value> ##What cmdlets can be used to create, modify, list, and delete variables##
 
-find-command
+find-command ##What cmdlet can be used, other than Get-Help, to find and list other cmdlets##
 
-Read-host
+Read-host ##Find the cmdlet that is used to prompt the user for input##
 
 _____________________________________________
 RUNNING CMDLETS
 
-get-process
+get-process ##Display a list of running processes##
 
-get-process -name s*
+get-process -name s* ##Display a list of all running processes that start with the letter "s"##
 
-get-alias gal, dir, echo, ?, %, ft
+get-alias gal, dir, echo, ?, %, ft ##Find the cmdlet and its purpose for the following aliases##
 
-get-netfirewallrule
+get-netfirewallrule ##Display a list of Windows Firewall Rules##
 
-set-alias gh get-help
+set-alias gh get-help ##Create a new alias called "gh" for the cmdlet "Get-Help"##
 
 ____________________________________________
 VARIABLES
 
-$var1 = get-random -minimum 25 -maximum 30
-$var2 = get-random -minimum 1 -maximum 10
-$sum = ($var1 + $var2)
-$sub = ($var1 - $var2)
-$prod = ($var1 * $var2)
-$quo = ($var1 / $var2)
+$var1 = get-random -minimum 25 -maximum 50 ##Create a variable called "var1" that holds a random number between 25-50##
+$var2 = get-random -minimum 1 -maximum 10 ##Create a variable called "var2" that holds a random number between 1-10.##
+$sum = ($var1 + $var2) ##Create a variable called "sum" that holds the sum of var1 and var2##
+$sub = ($var1 - $var2) ##Create a variable called "sub" that holds the difference of var1 and var2##
+$prod = ($var1 * $var2) ##Create a variable called "prod" that holds the product of var1 and var2##
+$quo = ($var1 / $var2) ##Create a variable called "quo" that holds the quotient of var1 and var2##
 
-write-host "`n$var1 + $var2 = $sum`n$var1 - $var2 = $sub`n$var1 * $var2 = $prod`n$var1 / $var2 = $quo"
+write-host "`n$var1 + $var2 = $sum`n$var1 - $var2 = $sub`n$var1 * $var2 = $prod`n$var1 / $var2 = $quo" ##Replace the variables in text with their values##
