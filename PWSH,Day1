@@ -73,4 +73,8 @@ $sub = ($var1 - $var2) ##Create a variable called "sub" that holds the differenc
 $prod = ($var1 * $var2) ##Create a variable called "prod" that holds the product of var1 and var2##
 $quo = ($var1 / $var2) ##Create a variable called "quo" that holds the quotient of var1 and var2##
 
-write-host "`n$var1 + $var2 = $sum`n$var1 - $var2 = $sub`n$var1 * $var2 = $prod`n$var1 / $var2 = $quo" ##Replace the variables in text with their values##
+write-host "`n$var1 + $var2 = $sum`n$var1 - $var2 = $sub`n$var1 * $var2 = $prod`n$var1 / $var2 = $quo" ##Replace          ##Replace the variables in text with their values##
+
+___________________________________________________________________________________________________________________
+
+
