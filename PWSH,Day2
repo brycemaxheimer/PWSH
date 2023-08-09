@@ -138,6 +138,32 @@ $array = @(Get-HotFix | Sort-Object -Property  Description | ft -Property HotFix
 echo $array
 
 ______________________________________________________________________________________________________________________________
+$osInfo              = Get-WmiObject Win32_OperatingSystem
+$manufac             = Get-WmiObject Win32_BIOS 
+$computerInfo        = Get-WmiObject Win32_ComputerSystem
+$diskInfo            = Get-WmiObject Win32_LogicalDisk | Select -ExpandProperty PATH
+
+$ourObject = New-Object -TypeName psobject 
+
+$ourObject | Add-Member -MemberType NoteProperty -Name ComputerName -Value $computerInfo.Name
+$ourObject | Add-Member -MemberType NoteProperty -Name OS -Value $osInfo.Caption
+$ourObject | Add-Member -MemberType NoteProperty -Name 'OS Version' -Value $("$($osInfo.Version) Build $($osInfo.BuildNumber)")
+$ourObject | Add-Member -memberType NoteProperty -name Manufacturer -value $manufac.Manufacturer
+$ourObject | Add-Member -MemberType NoteProperty -Name Disks -Value $diskInfo.Path
+
+cls
+
+echo $ourObject | Format-List
+
+$mypc = [PSCustomObject]@{
+    "ComputerName" = "$((Get-WmiObject Win32_ComputerSystem).name)"
+    "OS"           = "$((Get-WmiObject Win32_OperatingSystem).Caption)"
+    "OS Version"   = "$((Get-WmiObject Win32_OperatingSystem).Version)"
+    "Manufacturer" = "$((Get-WmiObject Win32_BIOS).Manufacturer)"
+    "Disks"        = $((Get-WmiObject Win32_LogicalDisk | Select -ExpandProperty PATH).path)
+    }
+echo  $mypc
+__________________________________________________________________________________________________________________
 
 
 
