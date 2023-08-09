@@ -235,8 +235,53 @@ Get-Content
 #Write file
 Set-Content -Path .\example.txt -Value "A String"
 
+$proc = @("notepad" , "msedge" , "mspaint")
 
 
 
+foreach ($p in $proc) {
+    start $p
+    get-process -name $p 
+    (get-process -name $p).Id >> C:\Users\student\Desktop\procs.txt
+    #Start-sleep 5
+}
 
+$processes = cat C:\Users\student\Desktop\procs.txt
+$array =  $processes -split " "
+
+foreach ($line in $array) {
+    taskkill /F /PID $line
+}
+
+
+$line1 = "Do you have model number: MT5437 for john.doe@sharklasers.com?"
+$line2 = "What model number for john.doe@sharklasers.com?"
+
+$line1arr = $line1 -split " "
+$line2arr = $line2 -split " "
+
+function detect_string {
+    foreach ($word in $line1arr) {
+        if ($word -match "[A-Z]{2}\d{4}") {
+            Write-Host "Line 1 contains the model number $word"
+            break
+        } else {
+            Write-Host "Line 1 does not contain a model number"
+            
+        }
+    }
+
+    foreach ($word in $line2arr) {
+        if ($word -match "[A-Z]{2}\d{4}") {
+            Write-Host "Line 2 contains the model number $word"
+            break
+        } else {
+            Write-Host "Line 2 does not contain a model number"
+        }
+    }
+}
+
+cls
+
+detect_string
 
