@@ -49,7 +49,7 @@ $mylist.Keys
 $mylist.Values
 $mylist["Location"] = "Germany"
 
-
+_________________________________________________________________________________________________________________
 $array = @(( get-random -minimum -10 -maximum 0)..( get-random -minimum 1 -maximum 20 ))
 
 echo $array
@@ -77,3 +77,11 @@ echo $employee1 `n
 echo $employee2 `n
 
 echo $employee3
+
+_____________________________________________________________________________________________________________________
+
+
+
+
+
+
