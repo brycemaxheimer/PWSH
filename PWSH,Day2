@@ -79,6 +79,66 @@ echo $employee2 `n
 echo $employee3
 
 _____________________________________________________________________________________________________________________
+#Script Blocks
+$myblock = {get-service | ft name,status}
+& $myblock ##how to call the script block
+
+#Sorting and Grouping
+Get-ChildItem
+#Sort by file length
+gci | Sort-Object -Property Length
+Get-ChildItem | sort -Descending
+gci | sort Length
+Get-ChildItem | sort -Property Length -Descending
+
+#Grouping
+Get-Service | Group-Object -Property status
+get-childitem | Group-Object {$_.Length -lt 1kb}
+
+#sorting
+1, 7, 10, 8, 4, 6 | Sort-Object
+"1", "7", "10", "8", "4", "6" | Sort-Object
+
+#get-random
+1..10 | Sort-object -Property {Get-Random}
+1..10 | get-random
+
+#select object
+get-process | select-object -First 10
+Get-Process | Sort-Object -property StartTime | select-object -last 10 | ft processname, starttime
+
+#expand property
+get-service | where-object {$_.status -eq 'running'}
+
+Get-ChildItem *.txt | Where-Object {$_.Length -gt 100}
+get-process | where {$_.name -notlike 'powershell*'} | sort id -Descending
+
+
+
+
+___________________________________________________________________________________________________________________________
+THE PIPELINE
+
+$array = @(Get-Process | sort StartTime -Descending -ErrorAction SilentlyContinue)
+
+$array[0,-1]
+
+____________________________________________________________________________________________________________________________
+
+Get-Date -UFormat %A
+
+____________________________________________________________________________________________________________________________
+
+Get-HotFix
+
+$array = @(Get-HotFix | Sort-Object -Property  InstalledOn | ft -Property HotFixID, InstalledOn )
+echo $array
+
+$array = @(Get-HotFix | Sort-Object -Property  Description | ft -Property HotFixID, InstalledOn, Description)
+echo $array
+
+______________________________________________________________________________________________________________________________
+
 
 
 
