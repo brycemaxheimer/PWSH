@@ -119,7 +119,7 @@ get-process | where {$_.name -notlike 'powershell*'} | sort id -Descending
 ___________________________________________________________________________________________________________________________
 THE PIPELINE
 
-$array = @(Get-Process | sort StartTime -Descending -ErrorAction SilentlyContinue)
+$$array = @(Get-Process | select name, starttime | Where-Object {$_.StartTime -notlike $null} | sort starttime)
 
 $array[0,-1]
 
@@ -131,11 +131,9 @@ ________________________________________________________________________________
 
 Get-HotFix
 
-$array = @(Get-HotFix | Sort-Object -Property  InstalledOn | ft -Property HotFixID, InstalledOn )
-echo $array
+Get-HotFix | Sort-Object -Property  InstalledOn | ft -Property HotFixID, InstalledOn
 
-$array = @(Get-HotFix | Sort-Object -Property  Description | ft -Property HotFixID, InstalledOn, Description)
-echo $array
+Get-HotFix | Sort-Object -Property  Description | ft -Property HotFixID, InstalledOn, Description
 
 ______________________________________________________________________________________________________________________________
 $osInfo              = Get-WmiObject Win32_OperatingSystem
