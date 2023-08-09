@@ -162,7 +162,78 @@ $mypc = [PSCustomObject]@{
     }
 echo  $mypc
 __________________________________________________________________________________________________________________
-s
+#additional commands
+#get-unique
+1,2,3,1,2,3,1,2,3,1,2,3 | Sort-Object | Get-Unique
+1,2,3,1,2,3,1,2,3,1,2,3 | Get-Unique
+
+#measure object
+Get-ChildItem | Measure-Object -Property Length
+(Get-ChildItem).count
+
+#compare-object
+'this is a string of words, whatever whatever' > comparetest.txt
+$before = Get-ChildItem
+'40' > comparetest.txt
+$after = Get-ChildItem
+Compare-Object $before $after -Property length, name
+
+#create objects
+$MyTruck = new-object object
+#add properties using add-member
+add-member -MemberType NoteProperty -Name Color -Value red -InputObject $MyTruck
+($mytruck).color
+#Add prop short-handed
+Add-Member -me NoteProperty -in $mytruck -na make -Value ford
+
+#creating an object using PSCustomObject
+$soldier = [PSCustomObject]@{
+    "FirstName"    = "Joe"
+    "LastName"     = "Snuffy"
+    "MilitaryRank" = "SSG"
+    "MOS"          = "17C"
+    "Position"      = "Host Analyst"
+}
+$Soldier
+
+#conditions/true/false
+#comparison operators
+-eq -ceq (case-sensitive) -ieq (case-insensitive)
+#-li (Like) uses wildcards, -eq does not
+#-match regex
+-replace
+-contains
+-in
+
+#if statements
+$x = 11
+if($x -gt 10) {"$x is larger than 10"}
+
+#else
+$x = 11
+if($x -gt 10) {"$x is larger than 10"}
+else {"$x is not larger than 10"}
+
+#switch statement
+$val = "peter"
+Switch($val) {
+    Peter { "That's the father" }
+    Lois { "That's the mother" }
+    Stewie { "That's the youngest child" }
+    Chris { "That's the oldest child" }
+    default { "Nobody cares about you $val" }
+}
+
+#Loops
+#foreach-object
+$nums = 1,2,3,4,5
+$Nums | foreach-object {$_ * 2}
+
+#Read files
+Get-Content
+
+#Write file
+Set-Content -Path .\example.txt -Value "A String"
 
 
 
