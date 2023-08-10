@@ -1,0 +1,102 @@
+function pythag {
+    $a = Read-Host -Prompt "Enter the length of a"
+    $b =  Read-Host -Prompt "Enter the length of b"
+    $asqr = [int]$a * [int]$a
+    $bsqr = [int]$b * [int]$b
+    $csqr = $asqr + $bsqr
+    $c = [Math]::Sqrt([int]$csqr)
+    echo "The hypotenuse is $c"
+}
+
+pythag
+
+function deg {
+    $a = Read-Host -Prompt "Enter the degrees of angle a on the triangle"
+    $b =  Read-Host -Prompt "Enter the degrees of angle b on the triangle"
+    $c = 180 - ([int]$a + [int]$b)
+    if ( [int]$a + [int]$b + [int]$c -gt 180) {
+        echo "Not a valid triangle"
+    } elseif ([int]$a + [int]$b + [int]$c -lt 1) {
+        echo "Not a valid triangle"
+    } else {
+        echo "The degree of angle C is $c"
+    }
+}
+
+deg
+
+function hum {
+    $tab = @{}
+    $name = Read-host "Enter your first name"
+    $lname = Read-host "Enter your last name"
+    $age = Read-host "Enter your Age"
+    $weight = Read-host "Enter your weight"
+    $weightkg = ([int]$weight / 2.2)
+    $tab.Add("First Name", $name)
+    $tab.Add("Last Name", $lname)
+    $tab.Add("Age", $Age)
+    $tab.Add("Weight", $weightkg)
+    echo $tab
+}
+
+hum
+
+____________________________________________________________________________________________________________________
+function ord_date {
+     $ord = Get-Date -UFormat %j
+     $year = Get-Date -UFormat %Y
+     $out = "${year}-" + "${ord}"
+     echo $out
+}
+
+ord_date
+
+function square_num {
+    $x = Read-Host -Prompt "Input the number you would like squared"
+    $sqr = [int]$x * [int]$x
+    echo $sqr
+}
+
+square_num
+
+function Get-Product {    
+    $x = Read-Host -Prompt "Input the first number"
+    $y = Read-Host -Prompt "Input the second number"
+    $z = Read-Host -Prompt "Input the third number"
+    $prod = [int]$x * [int]$y * [int]$z
+    echo "The product of the supplied number is $prod"
+}
+
+Get-Product
+
+____________________________________________________________________________________________________________________
+$proc = @("notepad" , "msedge" , "mspaint")
+
+foreach ($p in $proc) {
+    start $p
+    (get-process -name $p).Id >> C:\Users\student\Desktop\procs.txt
+    #Start-sleep 5
+}
+
+get-process -name Notepad, msedge, mspaint | Sort-Object Id | ft -Property Id, Processname, starttime, CPU, WorkingSet
+
+_____________________________________________________________________________________________________________________
+$proc = @("notepad" , "msedge" , "mspaint")
+
+
+
+foreach ($p in $proc) {
+    start $p
+    get-process -name $p 
+    (get-process -name $p).Id >> C:\Users\student\Desktop\procs.txt
+    #Start-sleep 5
+}
+
+$processes = cat C:\Users\student\Desktop\procs.txt
+$array =  $processes -split " "
+
+foreach ($line in $array) {
+    taskkill /F /PID $line
+}
+
+____________________________________________________________________________________________________________________
