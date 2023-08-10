@@ -29,3 +29,14 @@ return $line
             }
         }
     return -1
+
+6.) Custom date w/ -Uformat. Get todays date in Year month number and day of month in yyyymmdd format
+
+        $fmt = '%Y%m%d'
+        return Get-Date -Uformat $fmt
+
+#provided on the pipeline
+
+$_
+#or
+$input
