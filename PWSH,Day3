@@ -100,3 +100,18 @@ foreach ($line in $array) {
 }
 
 ____________________________________________________________________________________________________________________
+Function Get-Multisum([array]$array,[int]$number) {
+    Begin {
+        $sum = 0
+    }
+    Process {
+        ForEach($num in $array) {
+            if($num -eq $number) {
+                continue
+            }
+            $sum += $num
+        }
+}
+End {
+    $sum
+}
