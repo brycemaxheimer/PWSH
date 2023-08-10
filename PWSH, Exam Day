@@ -1,1 +1,31 @@
 1.) #Return the sum of the aguments
+    return $var1 + $var2 + $var3 + var4
+
+2.) #Return the line of text in the file given by the '$file' argument that begins with the text specified by '$line'.
+      If no line in the file begins with the '$line' text, return $null."
+
+$CONTENT = GET-CONTENT $file
+foreach ($i in $content) {
+  if ($i.startswith($line)) {
+    return $i
+    }
+return $line
+
+3.) #Combine the provided '$arr argument into a string seperated by a '/' between each element and return this string
+
+    return $arr -join('/')
+
+4.) #Return the processes sorted descending by their ProcessName
+
+    return get-process | sort-object -property name -descending
+
+5.) #Search the array for the first occurance of $key at column index 0 and return the value at
+    column index 9 of the same row.
+    Return -1 if key is not found
+
+    foreach ($i in $arr) {
+        if($i[0] -eq $key) {
+            return $i[9]
+            }
+        }
+    return -1
