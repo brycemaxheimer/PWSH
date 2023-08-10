@@ -117,7 +117,8 @@ Function Get-Multisum([array]$array,[int]$number) {
 }
 ___________________________________________________________________________________________________________________
 function get-urlinfo {
-    get-content "$HOME\Desktop\dns.txt" | ?{ $_ -match 'www\..*\.(com|org|net)'
+    get-content "$HOME\Desktop\dns.txt" | ?{ $_ -match 'www\..*\.(com|org|net)' | % { $matches[0] } | sort  | group | tee -variable b
+    ($b | measure -Property Count -Sum).Sum
 
 function Get-NetInfo {
     $pattern = '.*?((\d{1,3}\.){3}\d{1,3})'
