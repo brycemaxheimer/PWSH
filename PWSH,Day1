@@ -1,5 +1,4 @@
 xfreerdp /u:student /v:x.x.x.x -dynamic-resolution +glyph-cache +clipboard
-https://cted.cybbh.io/tech-college/pns/public/pns/latest/index.html
 
 get-command ##lists all commands##
 get-verb ##lists all verbs##
