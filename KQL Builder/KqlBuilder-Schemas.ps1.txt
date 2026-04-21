@@ -1,0 +1,417 @@
+<#
+.SYNOPSIS
+    Table schema definitions for all 22 supported Sentinel / MDE tables.
+    Raw schema strings are parsed at init time to populate AvailableColumns and ColumnTypes.
+.NOTES
+    Each table entry contains:
+      - ComputerField, UserField, TimeField: field name mappings
+      - DefaultColumns: sensible triage defaults
+      - SchemaRaw: full "ColName:type, ..." string from docs
+      - Specifics: hashtable of dropdown fields with common values
+      - ParseableColumns: columns eligible for structured parse (xml, dynamic, kv)
+      - SummarizeBy: default grouping columns for summarize mode
+#>
+
+function Initialize-TableSchemas {
+    # Raw schema strings (copied verbatim from workspace schema exports)
+    $rawSchemas = @{}
+
+    $rawSchemas['SecurityEvent'] = 'TenantId:string, TimeGenerated:datetime, SourceSystem:string, Account:string, AccountType:string, Computer:string, EventSourceName:string, Channel:string, Task:int, Level:string, EventData:string, EventID:int, Activity:string, PartitionKey:string, RowKey:string, StorageAccount:string, AzureDeploymentID:string, AzureTableName:string, AccessList:string, AccessMask:string, AccessReason:string, AccountDomain:string, AccountExpires:string, AccountName:string, AccountSessionIdentifier:string, AdditionalInfo:string, AdditionalInfo2:string, AllowedToDelegateTo:string, Attributes:string, AuditPolicyChanges:string, AuditsDiscarded:int, AuthenticationLevel:int, AuthenticationPackageName:string, AuthenticationProvider:string, AuthenticationServer:string, AuthenticationService:int, AuthenticationType:string, CACertificateHash:string, CalledStationID:string, CallerProcessId:string, CallerProcessName:string, CallingStationID:string, CAPublicKeyHash:string, CategoryId:string, CertificateDatabaseHash:string, ClassId:string, ClassName:string, ClientAddress:string, ClientIPAddress:string, ClientName:string, CommandLine:string, CompatibleIds:string, DCDNSName:string, DeviceDescription:string, DeviceId:string, DisplayName:string, Disposition:string, DomainBehaviorVersion:string, DomainName:string, DomainPolicyChanged:string, DomainSid:string, EAPType:string, ElevatedToken:string, ErrorCode:int, ExtendedQuarantineState:string, FailureReason:string, FileHash:string, FilePath:string, FilePathNoUser:string, Filter:string, ForceLogoff:string, Fqbn:string, FullyQualifiedSubjectMachineName:string, FullyQualifiedSubjectUserName:string, GroupMembership:string, HandleId:string, HardwareIds:string, HomeDirectory:string, HomePath:string, ImpersonationLevel:string, InterfaceUuid:string, IpAddress:string, IpPort:string, KeyLength:int, LmPackageName:string, LocationInformation:string, LockoutDuration:string, LockoutObservationWindow:string, LockoutThreshold:string, LoggingResult:string, LogonGuid:string, LogonHours:string, LogonID:string, LogonProcessName:string, LogonType:int, LogonTypeName:string, MachineAccountQuota:string, MachineInventory:string, MachineLogon:string, MandatoryLabel:string, MaxPasswordAge:string, MemberName:string, MemberSid:string, MinPasswordAge:string, MinPasswordLength:string, MixedDomainMode:string, NASIdentifier:string, NASIPv4Address:string, NASIPv6Address:string, NASPort:string, NASPortType:string, NetworkPolicyName:string, NewDate:string, NewMaxUsers:string, NewProcessId:string, NewProcessName:string, NewRemark:string, NewShareFlags:string, NewTime:string, NewUacValue:string, NewValue:string, NewValueType:string, ObjectName:string, ObjectServer:string, ObjectType:string, ObjectValueName:string, OemInformation:string, OldMaxUsers:string, OldRemark:string, OldShareFlags:string, OldUacValue:string, OldValue:string, OldValueType:string, OperationType:string, PackageName:string, ParentProcessName:string, PasswordHistoryLength:string, PasswordLastSet:string, PasswordProperties:string, PreviousDate:string, PreviousTime:string, PrimaryGroupId:string, PrivateKeyUsageCount:string, PrivilegeList:string, Process:string, ProcessId:string, ProcessName:string, Properties:string, ProfilePath:string, ProtocolSequence:string, ProxyPolicyName:string, QuarantineHelpURL:string, QuarantineSessionID:string, QuarantineSessionIdentifier:string, QuarantineState:string, QuarantineSystemHealthResult:string, RelativeTargetName:string, RemoteIpAddress:string, RemotePort:string, Requester:string, RequestId:string, RestrictedAdminMode:string, RowsDeleted:string, SamAccountName:string, ScriptPath:string, SecurityDescriptor:string, ServiceAccount:string, ServiceFileName:string, ServiceName:string, ServiceStartType:int, ServiceType:string, SessionName:string, ShareLocalPath:string, ShareName:string, SidHistory:string, Status:string, SubjectAccount:string, SubcategoryGuid:string, SubcategoryId:string, Subject:string, SubjectDomainName:string, SubjectKeyIdentifier:string, SubjectLogonId:string, SubjectMachineName:string, SubjectMachineSID:string, SubjectUserName:string, SubjectUserSid:string, SubStatus:string, TableId:string, TargetAccount:string, TargetDomainName:string, TargetInfo:string, TargetLinkedLogonId:string, TargetLogonGuid:string, TargetLogonId:string, TargetOutboundDomainName:string, TargetOutboundUserName:string, TargetServerName:string, TargetSid:string, TargetUser:string, TargetUserName:string, TargetUserSid:string, TemplateContent:string, TemplateDSObjectFQDN:string, TemplateInternalName:string, TemplateOID:string, TemplateSchemaVersion:string, TemplateVersion:string, TokenElevationType:string, TransmittedServices:string, UserAccountControl:string, UserParameters:string, UserPrincipalName:string, UserWorkstations:string, VirtualAccount:string, VendorIds:string, Workstation:string, WorkstationName:string, EventLevelName:string, SourceComputerId:string, EventOriginId:string, MG:string, TimeCollected:datetime, ManagementGroupName:string, SystemUserId:string, Version:int, Opcode:string, Keywords:string, Correlation:string, SystemProcessId:int, SystemThreadId:int, EventRecordId:string, Type:string, _ResourceId:string'
+
+    $rawSchemas['Syslog'] = 'TenantId:string, SourceSystem:string, TimeGenerated:datetime, MG:string, Computer:string, EventTime:datetime, Facility:string, HostName:string, SeverityLevel:string, SyslogMessage:string, ProcessID:int, HostIP:string, ProcessName:string, CollectorHostName:string, Type:string, _ResourceId:string'
+
+    $rawSchemas['CommonSecurityLog'] = 'TenantId:string, TimeGenerated:datetime, DeviceVendor:string, DeviceProduct:string, DeviceVersion:string, DeviceEventClassID:string, Activity:string, LogSeverity:string, OriginalLogSeverity:string, AdditionalExtensions:string, DeviceAction:string, ApplicationProtocol:string, EventCount:int, DestinationDnsDomain:string, DestinationServiceName:string, DestinationTranslatedAddress:string, DestinationTranslatedPort:int, CommunicationDirection:string, DeviceDnsDomain:string, DeviceExternalID:string, DeviceFacility:string, DeviceInboundInterface:string, DeviceNtDomain:string, DeviceOutboundInterface:string, DevicePayloadId:string, ProcessName:string, DeviceTranslatedAddress:string, DestinationHostName:string, DestinationMACAddress:string, DestinationNTDomain:string, DestinationProcessId:int, DestinationUserPrivileges:string, DestinationProcessName:string, DestinationPort:int, DestinationIP:string, DeviceTimeZone:string, DestinationUserID:string, DestinationUserName:string, DeviceAddress:string, DeviceName:string, DeviceMacAddress:string, ProcessID:int, EndTime:datetime, ExternalID:int, ExtID:string, FileCreateTime:string, FileHash:string, FileID:string, FileModificationTime:string, FilePath:string, FilePermission:string, FileType:string, FileName:string, FileSize:int, ReceivedBytes:long, Message:string, OldFileCreateTime:string, OldFileHash:string, OldFileID:string, OldFileModificationTime:string, OldFileName:string, OldFilePath:string, OldFilePermission:string, OldFileSize:int, OldFileType:string, SentBytes:long, EventOutcome:string, Protocol:string, Reason:string, RequestURL:string, RequestClientApplication:string, RequestContext:string, RequestCookies:string, RequestMethod:string, ReceiptTime:string, SourceHostName:string, SourceMACAddress:string, SourceNTDomain:string, SourceDnsDomain:string, SourceServiceName:string, SourceTranslatedAddress:string, SourceTranslatedPort:int, SourceProcessId:int, SourceUserPrivileges:string, SourceProcessName:string, SourcePort:int, SourceIP:string, StartTime:datetime, SourceUserID:string, SourceUserName:string, EventType:int, DeviceEventCategory:string, DeviceCustomIPv6Address1:string, DeviceCustomIPv6Address1Label:string, DeviceCustomIPv6Address2:string, DeviceCustomIPv6Address2Label:string, DeviceCustomIPv6Address3:string, DeviceCustomIPv6Address3Label:string, DeviceCustomIPv6Address4:string, DeviceCustomIPv6Address4Label:string, DeviceCustomFloatingPoint1:real, DeviceCustomFloatingPoint1Label:string, DeviceCustomFloatingPoint2:real, DeviceCustomFloatingPoint2Label:string, DeviceCustomFloatingPoint3:real, DeviceCustomFloatingPoint3Label:string, DeviceCustomFloatingPoint4:real, DeviceCustomFloatingPoint4Label:string, DeviceCustomNumber1:int, FieldDeviceCustomNumber1:long, DeviceCustomNumber1Label:string, DeviceCustomNumber2:int, FieldDeviceCustomNumber2:long, DeviceCustomNumber2Label:string, DeviceCustomNumber3:int, FieldDeviceCustomNumber3:long, DeviceCustomNumber3Label:string, DeviceCustomString1:string, DeviceCustomString1Label:string, DeviceCustomString2:string, DeviceCustomString2Label:string, DeviceCustomString3:string, DeviceCustomString3Label:string, DeviceCustomString4:string, DeviceCustomString4Label:string, DeviceCustomString5:string, DeviceCustomString5Label:string, DeviceCustomString6:string, DeviceCustomString6Label:string, DeviceCustomDate1:string, DeviceCustomDate1Label:string, DeviceCustomDate2:string, DeviceCustomDate2Label:string, FlexDate1:string, FlexDate1Label:string, FlexNumber1:int, FlexNumber1Label:string, FlexNumber2:int, FlexNumber2Label:string, FlexString1:string, FlexString1Label:string, FlexString2:string, FlexString2Label:string, RemoteIP:string, RemotePort:string, MaliciousIP:string, ThreatSeverity:int, IndicatorThreatType:string, ThreatDescription:string, ThreatConfidence:string, ReportReferenceLink:string, MaliciousIPLongitude:real, MaliciousIPLatitude:real, MaliciousIPCountry:string, Computer:string, SourceSystem:string, SimplifiedDeviceAction:string, CollectorHostName:string, Type:string, _ResourceId:string'
+
+    $rawSchemas['StorageFileLogs'] = 'TenantId:string, TimeGenerated:datetime, AccountName:string, Location:string, Protocol:string, OperationName:string, AuthenticationType:string, StatusCode:string, StatusText:string, DurationMs:real, ServerLatencyMs:real, Uri:string, CallerIpAddress:string, CorrelationId:string, SchemaVersion:string, OperationVersion:string, AuthenticationHash:string, RequesterObjectId:string, RequesterTenantId:string, RequesterAppId:string, RequesterAudience:string, RequesterTokenIssuer:string, RequesterUpn:string, RequesterUserName:string, AuthorizationDetails:dynamic, SmbPrimarySID:string, UserAgentHeader:string, ReferrerHeader:string, ClientRequestId:string, Etag:string, ServiceType:string, OperationCount:int, ObjectKey:string, RequestHeaderSize:long, RequestBodySize:long, ResponseHeaderSize:long, ResponseBodySize:long, RequestMd5:string, ResponseMd5:string, LastModifiedTime:datetime, ConditionsUsed:string, ContentLengthHeader:long, Category:string, TlsVersion:string, SmbTreeConnectID:string, SmbPersistentHandleID:string, SmbVolatileHandleID:string, SmbMessageID:string, SmbCreditsConsumed:int, SmbCommandDetail:string, SmbFileId:string, SmbSessionID:string, SmbCommandMajor:int, SmbCommandMinor:string, SasExpiryStatus:string, MetricResponseType:string, SmbStatusCode:string, SourceSystem:string, Type:string, _ResourceId:string'
+
+    $rawSchemas['BehaviorAnalytics'] = 'TenantId:string, SourceRecordId:string, TimeGenerated:datetime, TimeProcessed:datetime, ActivityType:string, ActionType:string, UserName:string, UserPrincipalName:string, EventSource:string, SourceIPAddress:string, SourceIPLocation:string, SourceDevice:string, DestinationIPAddress:string, DestinationIPLocation:string, DestinationDevice:string, EventVendor:string, EventProductVersion:string, ActorName:string, ActorPrincipalName:string, TargetName:string, TargetPrincipalName:string, Device:string, UsersInsights:dynamic, DevicesInsights:dynamic, ActivityInsights:dynamic, SourceSystem:string, NativeTableName:string, InvestigationPriority:int, Type:string, _ResourceId:string'
+
+    $rawSchemas['VMConnection'] = 'TimeGenerated:datetime, Computer:string, Direction:string, ProcessName:string, SourceIp:string, DestinationIp:string, DestinationPort:int, Protocol:string, RemoteIp:string, RemoteDnsQuestions:string, RemoteDnsCanonicalNames:string, RemoteClassification:string, RemoteLongitude:real, RemoteLatitude:real, RemoteCountry:string, BytesSent:long, BytesReceived:long, LinksLive:long, LinksTerminated:long, LinksEstablished:long, LinksFailed:long, Responses:long, ResponseTimeSum:long, ResponseTimeMin:long, ResponseTimeMax:long, MaliciousIp:string, IndicatorThreatType:string, Description:string, TLPLevel:string, Confidence:string, Severity:int, FirstReportedDateTime:string, LastReportedDateTime:string, IsActive:string, ReportReferenceLink:string, AdditionalInformation:string, ConnectionId:string, Machine:string, Process:string, AgentId:string, TenantId:string, SourceSystem:string, Type:string, _ResourceId:string'
+
+    $rawSchemas['W3CIISLog'] = 'TenantId:string, SourceSystem:string, FileUri:string, FileOffset:int, StorageAccount:string, AzureDeploymentID:string, Role:string, RoleInstance:string, Date:string, Time:string, TimeGenerated:datetime, sSiteName:string, sComputerName:string, sIP:string, csMethod:string, csUriStem:string, csUriQuery:string, sPort:int, csUserName:string, cIP:string, csVersion:string, csUserAgent:string, csCookie:string, csReferer:string, csHost:string, scStatus:string, scSubStatus:string, scWin32Status:string, scBytes:long, csBytes:long, TimeTaken:long, Computer:string, MaliciousIP:string, IndicatorThreatType:string, Description:string, TLPLevel:string, Confidence:string, Severity:int, FirstReportedDateTime:string, LastReportedDateTime:string, IsActive:string, ReportReferenceLink:string, AdditionalInformation:string, RemoteIPLongitude:real, RemoteIPLatitude:real, RemoteIPCountry:string, MG:string, ManagementGroupName:string, Type:string, _ResourceId:string'
+
+    $rawSchemas['DHCP'] = 'TimeGenerated:datetime, RawData:string, TenantId:string, Type:string, _ResourceId:string, ID:string, Date:string, Time:string, Description:string, IP:string, HostName:string, MAC:string, User:string, TransactionID:string, QResult:string, Probationtime:string, CorrelationID:string, DhcidVendorClass:string, VendorClass:string, UserClassHex:string, UserClassASCII:string, RelayAgentInformation:string, DnsRegError:string'
+
+    $rawSchemas['DeviceEvents'] = 'TenantId:string, AccountDomain:string, AccountName:string, AccountSid:string, ActionType:string, AdditionalFields:dynamic, AppGuardContainerId:string, DeviceId:string, DeviceName:string, FileName:string, FileOriginIP:string, FileOriginUrl:string, FolderPath:string, InitiatingProcessAccountDomain:string, InitiatingProcessAccountName:string, InitiatingProcessAccountObjectId:string, InitiatingProcessAccountSid:string, InitiatingProcessAccountUpn:string, InitiatingProcessCommandLine:string, InitiatingProcessFileName:string, InitiatingProcessFolderPath:string, InitiatingProcessId:long, InitiatingProcessLogonId:long, InitiatingProcessMD5:string, InitiatingProcessParentFileName:string, InitiatingProcessParentId:long, InitiatingProcessSHA1:string, InitiatingProcessSHA256:string, LocalIP:string, LocalPort:int, LogonId:long, MD5:string, MachineGroup:string, ProcessCommandLine:string, ProcessId:long, ProcessTokenElevation:string, RegistryKey:string, RegistryValueData:string, RegistryValueName:string, RemoteDeviceName:string, RemoteIP:string, RemotePort:int, RemoteUrl:string, ReportId:long, SHA1:string, SHA256:string, Timestamp:datetime, TimeGenerated:datetime, FileSize:long, InitiatingProcessCreationTime:datetime, InitiatingProcessFileSize:long, InitiatingProcessParentCreationTime:datetime, InitiatingProcessVersionInfoCompanyName:string, InitiatingProcessVersionInfoFileDescription:string, InitiatingProcessVersionInfoInternalFileName:string, InitiatingProcessVersionInfoOriginalFileName:string, InitiatingProcessVersionInfoProductName:string, InitiatingProcessVersionInfoProductVersion:string, ProcessCreationTime:datetime, CreatedProcessSessionId:long, IsProcessRemoteSession:bool, ProcessRemoteSessionDeviceName:string, ProcessRemoteSessionIP:string, InitiatingProcessSessionId:long, IsInitiatingProcessRemoteSession:bool, InitiatingProcessRemoteSessionDeviceName:string, InitiatingProcessRemoteSessionIP:string, InitiatingProcessUniqueId:string, SourceSystem:string, Type:string'
+
+    $rawSchemas['DeviceRegistryEvents'] = 'TenantId:string, ActionType:string, AppGuardContainerId:string, DeviceId:string, DeviceName:string, InitiatingProcessAccountDomain:string, InitiatingProcessAccountName:string, InitiatingProcessAccountObjectId:string, InitiatingProcessAccountSid:string, InitiatingProcessAccountUpn:string, InitiatingProcessCommandLine:string, InitiatingProcessFileName:string, InitiatingProcessFolderPath:string, InitiatingProcessId:long, InitiatingProcessIntegrityLevel:string, InitiatingProcessMD5:string, InitiatingProcessParentFileName:string, InitiatingProcessParentId:long, InitiatingProcessSHA1:string, InitiatingProcessSHA256:string, InitiatingProcessTokenElevation:string, InitiatingProcessFileSize:long, InitiatingProcessVersionInfoCompanyName:string, InitiatingProcessVersionInfoProductName:string, InitiatingProcessVersionInfoProductVersion:string, InitiatingProcessVersionInfoInternalFileName:string, InitiatingProcessVersionInfoOriginalFileName:string, InitiatingProcessVersionInfoFileDescription:string, MachineGroup:string, PreviousRegistryKey:string, PreviousRegistryValueData:string, PreviousRegistryValueName:string, RegistryKey:string, RegistryValueData:string, RegistryValueName:string, RegistryValueType:string, ReportId:long, TimeGenerated:datetime, Timestamp:datetime, InitiatingProcessParentCreationTime:datetime, InitiatingProcessCreationTime:datetime, InitiatingProcessSessionId:long, IsInitiatingProcessRemoteSession:bool, InitiatingProcessRemoteSessionDeviceName:string, InitiatingProcessRemoteSessionIP:string, InitiatingProcessUniqueId:string, SourceSystem:string, Type:string'
+
+    $rawSchemas['DeviceFileEvents'] = 'TenantId:string, ActionType:string, AdditionalFields:dynamic, AppGuardContainerId:string, DeviceId:string, DeviceName:string, FileName:string, FileOriginIP:string, FileOriginReferrerUrl:string, FileOriginUrl:string, FileSize:long, FolderPath:string, InitiatingProcessAccountDomain:string, InitiatingProcessAccountName:string, InitiatingProcessAccountObjectId:string, InitiatingProcessAccountSid:string, InitiatingProcessAccountUpn:string, InitiatingProcessCommandLine:string, InitiatingProcessFileName:string, InitiatingProcessFolderPath:string, InitiatingProcessId:long, InitiatingProcessIntegrityLevel:string, InitiatingProcessMD5:string, InitiatingProcessParentFileName:string, InitiatingProcessParentId:long, InitiatingProcessSHA1:string, InitiatingProcessSHA256:string, InitiatingProcessTokenElevation:string, IsAzureInfoProtectionApplied:bool, MD5:string, MachineGroup:string, PreviousFileName:string, PreviousFolderPath:string, ReportId:long, RequestAccountDomain:string, RequestAccountName:string, RequestAccountSid:string, RequestProtocol:string, RequestSourceIP:string, RequestSourcePort:int, SHA1:string, SHA256:string, SensitivityLabel:string, SensitivitySubLabel:string, ShareName:string, Timestamp:datetime, TimeGenerated:datetime, InitiatingProcessParentCreationTime:datetime, InitiatingProcessCreationTime:datetime, InitiatingProcessFileSize:long, InitiatingProcessVersionInfoCompanyName:string, InitiatingProcessVersionInfoFileDescription:string, InitiatingProcessVersionInfoInternalFileName:string, InitiatingProcessVersionInfoOriginalFileName:string, InitiatingProcessVersionInfoProductName:string, InitiatingProcessVersionInfoProductVersion:string, InitiatingProcessSessionId:long, IsInitiatingProcessRemoteSession:bool, InitiatingProcessRemoteSessionDeviceName:string, InitiatingProcessRemoteSessionIP:string, InitiatingProcessUniqueId:string, SourceSystem:string, Type:string'
+
+    $rawSchemas['DeviceProcessEvents'] = 'TenantId:string, AccountDomain:string, AccountName:string, AccountObjectId:string, AccountSid:string, AccountUpn:string, ActionType:string, AdditionalFields:dynamic, AppGuardContainerId:string, DeviceId:string, DeviceName:string, FileName:string, FolderPath:string, FileSize:long, InitiatingProcessAccountDomain:string, InitiatingProcessAccountName:string, InitiatingProcessAccountObjectId:string, InitiatingProcessAccountSid:string, InitiatingProcessAccountUpn:string, InitiatingProcessCommandLine:string, InitiatingProcessFileName:string, InitiatingProcessFolderPath:string, InitiatingProcessId:long, InitiatingProcessIntegrityLevel:string, InitiatingProcessLogonId:long, InitiatingProcessMD5:string, InitiatingProcessParentFileName:string, InitiatingProcessParentId:long, InitiatingProcessSHA1:string, InitiatingProcessSHA256:string, InitiatingProcessTokenElevation:string, InitiatingProcessFileSize:long, InitiatingProcessVersionInfoCompanyName:string, InitiatingProcessVersionInfoProductName:string, InitiatingProcessVersionInfoProductVersion:string, InitiatingProcessVersionInfoInternalFileName:string, InitiatingProcessVersionInfoOriginalFileName:string, InitiatingProcessVersionInfoFileDescription:string, LogonId:long, MD5:string, MachineGroup:string, ProcessCommandLine:string, ProcessCreationTime:datetime, ProcessId:long, ProcessIntegrityLevel:string, ProcessTokenElevation:string, ProcessVersionInfoCompanyName:string, ProcessVersionInfoProductName:string, ProcessVersionInfoProductVersion:string, ProcessVersionInfoInternalFileName:string, ProcessVersionInfoOriginalFileName:string, ProcessVersionInfoFileDescription:string, InitiatingProcessSignerType:string, InitiatingProcessSignatureStatus:string, ReportId:long, SHA1:string, SHA256:string, TimeGenerated:datetime, Timestamp:datetime, InitiatingProcessParentCreationTime:datetime, InitiatingProcessCreationTime:datetime, CreatedProcessSessionId:long, IsProcessRemoteSession:bool, ProcessRemoteSessionDeviceName:string, ProcessRemoteSessionIP:string, InitiatingProcessSessionId:long, IsInitiatingProcessRemoteSession:bool, InitiatingProcessRemoteSessionDeviceName:string, InitiatingProcessRemoteSessionIP:string, InitiatingProcessUniqueId:string, ProcessUniqueId:string, SourceSystem:string, Type:string'
+
+    $rawSchemas['DeviceNetworkEvents'] = 'TenantId:string, ActionType:string, AdditionalFields:dynamic, AppGuardContainerId:string, DeviceId:string, DeviceName:string, InitiatingProcessAccountDomain:string, InitiatingProcessAccountName:string, InitiatingProcessAccountObjectId:string, InitiatingProcessAccountSid:string, InitiatingProcessAccountUpn:string, InitiatingProcessCommandLine:string, InitiatingProcessFileName:string, InitiatingProcessFolderPath:string, InitiatingProcessId:long, InitiatingProcessIntegrityLevel:string, InitiatingProcessMD5:string, InitiatingProcessParentFileName:string, InitiatingProcessParentId:long, InitiatingProcessSHA1:string, InitiatingProcessSHA256:string, InitiatingProcessTokenElevation:string, InitiatingProcessFileSize:long, InitiatingProcessVersionInfoCompanyName:string, InitiatingProcessVersionInfoProductName:string, InitiatingProcessVersionInfoProductVersion:string, InitiatingProcessVersionInfoInternalFileName:string, InitiatingProcessVersionInfoOriginalFileName:string, InitiatingProcessVersionInfoFileDescription:string, LocalIP:string, LocalIPType:string, LocalPort:int, MachineGroup:string, Protocol:string, RemoteIP:string, RemoteIPType:string, RemotePort:int, RemoteUrl:string, ReportId:long, TimeGenerated:datetime, Timestamp:datetime, InitiatingProcessParentCreationTime:datetime, InitiatingProcessCreationTime:datetime, InitiatingProcessSessionId:long, IsInitiatingProcessRemoteSession:bool, InitiatingProcessRemoteSessionDeviceName:string, InitiatingProcessRemoteSessionIP:string, InitiatingProcessUniqueId:string, SourceSystem:string, Type:string'
+
+    $rawSchemas['TomcatEvent'] = 'TimeGenerated:datetime, EventProduct:string, EventType:string, EventSeverity:string, EventStartTime:datetime, SrcIpAddr:string, ClientIdentity:dynamic, SrcUserName:dynamic, HttpRequestMethod:dynamic, UrlOriginal:dynamic, HttpVersion:dynamic, HttpStatusCode:dynamic, HttpResponseBodyBytes:dynamic, HttpReferrerOriginal:dynamic, HttpUserAgentOriginal:dynamic, ClassName:string, DvcAction:string, EventMessage:string, ServerHostName:string'
+
+    $rawSchemas['DeviceImageLoadEvents'] = 'TenantId:string, ActionType:string, AppGuardContainerId:string, DeviceId:string, DeviceName:string, FileName:string, FolderPath:string, InitiatingProcessAccountDomain:string, InitiatingProcessAccountName:string, InitiatingProcessAccountObjectId:string, InitiatingProcessAccountSid:string, InitiatingProcessAccountUpn:string, InitiatingProcessCommandLine:string, InitiatingProcessFileName:string, InitiatingProcessFolderPath:string, InitiatingProcessId:long, InitiatingProcessIntegrityLevel:string, InitiatingProcessMD5:string, InitiatingProcessParentFileName:string, InitiatingProcessParentId:long, InitiatingProcessSHA1:string, InitiatingProcessSHA256:string, InitiatingProcessTokenElevation:string, MD5:string, MachineGroup:string, ReportId:long, SHA1:string, SHA256:string, Timestamp:datetime, TimeGenerated:datetime, InitiatingProcessParentCreationTime:datetime, InitiatingProcessCreationTime:datetime, InitiatingProcessFileSize:long, InitiatingProcessVersionInfoCompanyName:string, InitiatingProcessVersionInfoFileDescription:string, InitiatingProcessVersionInfoInternalFileName:string, InitiatingProcessVersionInfoOriginalFileName:string, InitiatingProcessVersionInfoProductName:string, InitiatingProcessVersionInfoProductVersion:string, FileSize:long, InitiatingProcessSessionId:long, IsInitiatingProcessRemoteSession:bool, InitiatingProcessRemoteSessionDeviceName:string, InitiatingProcessRemoteSessionIP:string, InitiatingProcessUniqueId:string, SourceSystem:string, Type:string'
+
+    $rawSchemas['DeviceNetworkInfo'] = 'TenantId:string, ConnectedNetworks:dynamic, DefaultGateways:dynamic, DeviceId:string, DeviceName:string, DnsAddresses:dynamic, IPAddresses:dynamic, IPv4Dhcp:string, IPv6Dhcp:string, MacAddress:string, MachineGroup:string, NetworkAdapterName:string, NetworkAdapterStatus:string, NetworkAdapterType:string, ReportId:long, TimeGenerated:datetime, Timestamp:datetime, TunnelType:string, NetworkAdapterVendor:string, SourceSystem:string, Type:string'
+
+    $rawSchemas['DeviceLogonEvents'] = 'TenantId:string, AccountDomain:string, AccountName:string, AccountSid:string, ActionType:string, AdditionalFields:dynamic, AppGuardContainerId:string, DeviceId:string, DeviceName:string, FailureReason:string, InitiatingProcessAccountDomain:string, InitiatingProcessAccountName:string, InitiatingProcessAccountObjectId:string, InitiatingProcessAccountSid:string, InitiatingProcessAccountUpn:string, InitiatingProcessCommandLine:string, InitiatingProcessFileName:string, InitiatingProcessFolderPath:string, InitiatingProcessId:long, InitiatingProcessIntegrityLevel:string, InitiatingProcessMD5:string, InitiatingProcessParentFileName:string, InitiatingProcessParentId:long, InitiatingProcessSHA1:string, InitiatingProcessSHA256:string, InitiatingProcessTokenElevation:string, IsLocalAdmin:bool, LogonId:long, LogonType:string, MachineGroup:string, Protocol:string, RemoteDeviceName:string, RemoteIP:string, RemoteIPType:string, RemotePort:int, ReportId:long, Timestamp:datetime, TimeGenerated:datetime, InitiatingProcessParentCreationTime:datetime, InitiatingProcessCreationTime:datetime, InitiatingProcessFileSize:long, InitiatingProcessVersionInfoCompanyName:string, InitiatingProcessVersionInfoFileDescription:string, InitiatingProcessVersionInfoInternalFileName:string, InitiatingProcessVersionInfoOriginalFileName:string, InitiatingProcessVersionInfoProductName:string, InitiatingProcessVersionInfoProductVersion:string, InitiatingProcessSessionId:long, IsInitiatingProcessRemoteSession:bool, InitiatingProcessRemoteSessionDeviceName:string, InitiatingProcessRemoteSessionIP:string, InitiatingProcessUniqueId:string, SourceSystem:string, Type:string'
+
+    $rawSchemas['SigninLogs'] = 'TenantId:string, SourceSystem:string, TimeGenerated:datetime, ResourceId:string, OperationName:string, OperationVersion:string, Category:string, ResultType:string, ResultSignature:string, ResultDescription:string, DurationMs:long, CorrelationId:string, Resource:string, ResourceGroup:string, ResourceProvider:string, Identity:string, Level:string, Location:string, AlternateSignInName:string, AppDisplayName:string, AppId:string, AuthenticationContextClassReferences:string, AuthenticationDetails:string, AppliedEventListeners:dynamic, AuthenticationMethodsUsed:string, AuthenticationProcessingDetails:string, AuthenticationRequirement:string, AuthenticationRequirementPolicies:string, ClientAppUsed:string, ConditionalAccessPolicies:dynamic, ConditionalAccessStatus:string, CreatedDateTime:datetime, DeviceDetail:dynamic, IsInteractive:bool, Id:string, IPAddress:string, IsRisky:bool, LocationDetails:dynamic, MfaDetail:dynamic, NetworkLocationDetails:string, OriginalRequestId:string, ProcessingTimeInMilliseconds:string, RiskDetail:string, RiskEventTypes:string, RiskEventTypes_V2:string, RiskLevelAggregated:string, RiskLevelDuringSignIn:string, RiskState:string, ResourceDisplayName:string, ResourceIdentity:string, ResourceServicePrincipalId:string, ServicePrincipalId:string, ServicePrincipalName:string, Status:dynamic, TokenIssuerName:string, TokenIssuerType:string, UserAgent:string, UserDisplayName:string, UserId:string, UserPrincipalName:string, AADTenantId:string, UserType:string, FlaggedForReview:bool, IPAddressFromResourceProvider:string, SignInIdentifier:string, SignInIdentifierType:string, ResourceTenantId:string, HomeTenantId:string, UniqueTokenIdentifier:string, SessionId:string, SessionLifetimePolicies:string, AutonomousSystemNumber:string, AuthenticationProtocol:string, CrossTenantAccessType:string, AuthenticationAppDeviceDetails:string, AuthenticationAppPolicyEvaluationDetails:string, ClientCredentialType:string, FederatedCredentialId:string, GlobalSecureAccessIpAddress:string, HomeTenantName:string, IncomingTokenType:string, IsTenantRestricted:bool, IsThroughGlobalSecureAccess:bool, OriginalTransferMethod:string, TokenProtectionStatusDetails:dynamic, AppOwnerTenantId:string, ResourceOwnerTenantId:string, Agent:dynamic, SourceAppClientId:string, AppliedConditionalAccessPolicies:string, RiskLevel:string, Type:string'
+
+    $rawSchemas['AuditLogs'] = 'TenantId:string, SourceSystem:string, TimeGenerated:datetime, ResourceId:string, OperationName:string, OperationVersion:string, Category:string, ResultType:string, ResultSignature:string, ResultDescription:string, DurationMs:long, CorrelationId:string, Resource:string, ResourceGroup:string, ResourceProvider:string, Identity:string, Level:string, Location:string, AdditionalDetails:dynamic, Id:string, InitiatedBy:dynamic, LoggedByService:string, Result:string, ResultReason:string, TargetResources:dynamic, AADTenantId:string, ActivityDisplayName:string, ActivityDateTime:datetime, AADOperationType:string, Type:string'
+
+    $rawSchemas['SecurityIncident'] = 'TenantId:string, TimeGenerated:datetime, IncidentName:string, Title:string, Description:string, Severity:string, Status:string, Classification:string, ClassificationComment:string, ClassificationReason:string, Owner:dynamic, ProviderName:string, ProviderIncidentId:string, FirstActivityTime:datetime, LastActivityTime:datetime, FirstModifiedTime:datetime, LastModifiedTime:datetime, CreatedTime:datetime, ClosedTime:datetime, IncidentNumber:int, RelatedAnalyticRuleIds:dynamic, AlertIds:dynamic, BookmarkIds:dynamic, Comments:dynamic, Tasks:dynamic, Labels:dynamic, IncidentUrl:string, AdditionalData:dynamic, ModifiedBy:string, SourceSystem:string, Type:string'
+
+    $rawSchemas['SecurityAlert'] = 'TenantId:string, TimeGenerated:datetime, DisplayName:string, AlertName:string, AlertSeverity:string, Description:string, ProviderName:string, VendorName:string, VendorOriginalId:string, SystemAlertId:string, ResourceId:string, SourceComputerId:string, AlertType:string, ConfidenceLevel:string, ConfidenceScore:real, IsIncident:bool, StartTime:datetime, EndTime:datetime, ProcessingEndTime:datetime, RemediationSteps:string, ExtendedProperties:string, Entities:string, SourceSystem:string, WorkspaceSubscriptionId:string, WorkspaceResourceGroup:string, ExtendedLinks:string, ProductName:string, ProductComponentName:string, AlertLink:string, Status:string, CompromisedEntity:string, Tactics:string, Techniques:string, SubTechniques:string, Type:string'
+
+    $rawSchemas['Anomalies'] = 'TenantId:string, Id:string, WorkspaceId:string, VendorName:string, TimeGenerated:datetime, AnomalyTemplateId:string, AnomalyTemplateName:string, AnomalyTemplateVersion:string, RuleId:string, RuleStatus:string, RuleName:string, RuleConfigVersion:string, Score:real, Description:string, StartTime:datetime, EndTime:datetime, ExtendedLinks:dynamic, Tactics:string, Techniques:string, UserName:string, UserPrincipalName:string, SourceIpAddress:string, SourceLocation:dynamic, SourceDevice:string, DestinationIpAddress:string, DestinationLocation:dynamic, DestinationDevice:string, ActivityInsights:dynamic, DeviceInsights:dynamic, UserInsights:dynamic, AnomalyReasons:dynamic, Entities:dynamic, ExtendedProperties:dynamic, AnomalyDetails:dynamic, SourceSystem:string, Type:string'
+
+    # ================================================================
+    # TABLE CONFIG: field mappings, defaults, specifics, parse targets
+    # ================================================================
+    $tableConfigs = @{}
+
+    $tableConfigs['SecurityEvent'] = @{
+        ComputerField = 'Computer'; UserField = 'Account'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','Computer','Account','EventID','Activity','LogonType','IpAddress','ProcessName','CommandLine')
+        Specifics = @{
+            EventID  = @('','4624','4625','4634','4648','4672','4688','4697','4698','4720','4732','4738','7045','1102')
+            LogonType = @('','2','3','4','5','7','8','9','10','11')
+        }
+        ParseableColumns = @{
+            EventData = @{ Type = 'xml'; Label = 'Windows Event XML' }
+        }
+        SummarizeBy = @('Account','EventID','Computer')
+    }
+
+    $tableConfigs['Syslog'] = @{
+        ComputerField = 'Computer'; UserField = 'ProcessName'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','Computer','Facility','SeverityLevel','ProcessName','SyslogMessage')
+        Specifics = @{
+            Facility = @('','auth','authpriv','cron','daemon','kern','local0','local1','local2','local3','local4','local5','local6','local7','mail','syslog','user')
+            SeverityLevel = @('','emerg','alert','crit','err','warning','notice','info','debug')
+        }
+        ParseableColumns = @{
+            SyslogMessage = @{ Type = 'kv'; Label = 'Key=Value pairs in message' }
+        }
+        SummarizeBy = @('Computer','Facility','SeverityLevel','ProcessName')
+    }
+
+    $tableConfigs['CommonSecurityLog'] = @{
+        ComputerField = 'Computer'; UserField = 'SourceUserName'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','DeviceVendor','DeviceProduct','Activity','SourceIP','DestinationIP','DestinationPort','Protocol','SourceUserName','Message')
+        Specifics = @{
+            DeviceVendor = @('','Palo Alto Networks','Fortinet','Check Point','Cisco','F5','Blue Coat','Microsoft','Barracuda','Zscaler')
+            DeviceAction = @('','Allowed','Denied','Blocked','Dropped','Reset','Rejected')
+            Protocol     = @('','TCP','UDP','ICMP','HTTP','HTTPS','DNS','SSH','RDP','SMB')
+        }
+        ParseableColumns = @{
+            AdditionalExtensions = @{ Type = 'kv'; Label = 'CEF key-value extensions' }
+            Message              = @{ Type = 'kv'; Label = 'Syslog message body' }
+        }
+        SummarizeBy = @('DeviceVendor','DeviceProduct','SourceIP','DestinationIP')
+    }
+
+    $tableConfigs['StorageFileLogs'] = @{
+        ComputerField = ''; UserField = 'RequesterUpn'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','AccountName','OperationName','StatusCode','Uri','CallerIpAddress','ServiceType','Protocol')
+        Specifics = @{
+            OperationName = @('','GetBlob','PutBlob','DeleteBlob','ListBlobs','GetBlobProperties','CopyBlob','GetContainerProperties')
+            ServiceType   = @('','blob','file','table','queue')
+            Protocol      = @('','HTTPS','HTTP','SMB')
+        }
+        ParseableColumns = @{
+            AuthorizationDetails = @{ Type = 'dynamic'; Label = 'Auth detail JSON' }
+        }
+        SummarizeBy = @('OperationName','CallerIpAddress','AccountName','StatusCode')
+    }
+
+    $tableConfigs['BehaviorAnalytics'] = @{
+        ComputerField = 'SourceDevice'; UserField = 'UserPrincipalName'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','UserPrincipalName','ActivityType','ActionType','SourceIPAddress','SourceDevice','DestinationDevice','InvestigationPriority')
+        Specifics = @{
+            ActivityType = @('','LogOn','FailedLogOn','ResourceAccess','ElevationOfPrivilege','ResetPassword')
+            ActionType   = @('','Sign-in','FailedSignin','ResourceAccess','PrivilegeEscalation')
+            EventSource  = @('','AzureActiveDirectory','SecurityEvents','OfficeActivity')
+        }
+        ParseableColumns = @{
+            UsersInsights    = @{ Type = 'dynamic'; Label = 'User behavior insights' }
+            DevicesInsights  = @{ Type = 'dynamic'; Label = 'Device behavior insights' }
+            ActivityInsights = @{ Type = 'dynamic'; Label = 'Activity behavior insights' }
+        }
+        SummarizeBy = @('UserPrincipalName','ActivityType','SourceIPAddress')
+    }
+
+    $tableConfigs['VMConnection'] = @{
+        ComputerField = 'Computer'; UserField = ''; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','Computer','Direction','ProcessName','SourceIp','DestinationIp','DestinationPort','Protocol','BytesSent','BytesReceived')
+        Specifics = @{
+            Direction = @('','inbound','outbound')
+            Protocol  = @('','tcp','udp')
+        }
+        ParseableColumns = @{}
+        SummarizeBy = @('Computer','DestinationIp','DestinationPort','ProcessName')
+    }
+
+    $tableConfigs['W3CIISLog'] = @{
+        ComputerField = 'Computer'; UserField = 'csUserName'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','Computer','cIP','csMethod','csUriStem','csUriQuery','scStatus','csUserAgent','TimeTaken')
+        Specifics = @{
+            csMethod = @('','GET','POST','PUT','DELETE','PATCH','HEAD','OPTIONS')
+            scStatus = @('','200','301','302','400','401','403','404','500','502','503')
+        }
+        ParseableColumns = @{}
+        SummarizeBy = @('cIP','csUriStem','scStatus','csMethod')
+    }
+
+    $tableConfigs['DHCP'] = @{
+        ComputerField = 'HostName'; UserField = 'User'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','Description','IP','HostName','MAC','User','TransactionID','QResult')
+        Specifics = @{
+            Description = @('','Assign','Renew','Release','DNS Update','NACK','DNS Update Failed')
+        }
+        ParseableColumns = @{
+            RawData = @{ Type = 'kv'; Label = 'Raw DHCP log line' }
+        }
+        SummarizeBy = @('HostName','IP','MAC','Description')
+    }
+
+    $tableConfigs['DeviceEvents'] = @{
+        ComputerField = 'DeviceName'; UserField = 'AccountName'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','DeviceName','AccountName','ActionType','FileName','FolderPath','ProcessCommandLine','InitiatingProcessFileName','RemoteIP')
+        Specifics = @{
+            ActionType = @('','AntivirusDetection','ExploitGuardNetworkProtectionBlocked','FirewallInboundConnectionBlocked','FirewallOutboundConnectionBlocked','SmartScreenUrlWarning','SmartScreenAppWarning','PowerShellCommand','UsbDriveMounted','UsbDriveUnmounted','ServiceInstalled','ScheduledTaskCreated','ScheduledTaskUpdated','ScheduledTaskDeleted','NamedPipeEvent','WmiBindEventFilter','ProcessPrimaryTokenModified')
+        }
+        ParseableColumns = @{
+            AdditionalFields = @{ Type = 'dynamic'; Label = 'Extended event fields' }
+        }
+        SummarizeBy = @('DeviceName','ActionType','AccountName','FileName')
+    }
+
+    $tableConfigs['DeviceRegistryEvents'] = @{
+        ComputerField = 'DeviceName'; UserField = 'InitiatingProcessAccountName'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','DeviceName','ActionType','RegistryKey','RegistryValueName','RegistryValueData','InitiatingProcessFileName','InitiatingProcessCommandLine')
+        Specifics = @{
+            ActionType        = @('','RegistryValueSet','RegistryKeyCreated','RegistryKeyDeleted','RegistryValueDeleted','RegistryKeyRenamed')
+            RegistryValueType = @('','String','ExpandString','Binary','Dword','MultiString','Qword','None')
+        }
+        ParseableColumns = @{}
+        SummarizeBy = @('DeviceName','ActionType','RegistryKey','InitiatingProcessFileName')
+    }
+
+    $tableConfigs['DeviceFileEvents'] = @{
+        ComputerField = 'DeviceName'; UserField = 'InitiatingProcessAccountName'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','DeviceName','ActionType','FileName','FolderPath','SHA256','InitiatingProcessFileName','InitiatingProcessCommandLine')
+        Specifics = @{
+            ActionType = @('','FileCreated','FileModified','FileDeleted','FileRenamed','FileMoved')
+        }
+        ParseableColumns = @{
+            AdditionalFields = @{ Type = 'dynamic'; Label = 'Extended file event fields' }
+        }
+        SummarizeBy = @('DeviceName','ActionType','FileName','InitiatingProcessFileName')
+    }
+
+    $tableConfigs['DeviceProcessEvents'] = @{
+        ComputerField = 'DeviceName'; UserField = 'AccountName'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','DeviceName','AccountName','FileName','FolderPath','ProcessCommandLine','InitiatingProcessFileName','InitiatingProcessCommandLine','SHA256')
+        Specifics = @{
+            ActionType = @('','ProcessCreated')
+        }
+        ParseableColumns = @{
+            AdditionalFields = @{ Type = 'dynamic'; Label = 'Extended process fields' }
+        }
+        SummarizeBy = @('DeviceName','FileName','AccountName','InitiatingProcessFileName')
+    }
+
+    $tableConfigs['DeviceNetworkEvents'] = @{
+        ComputerField = 'DeviceName'; UserField = 'InitiatingProcessAccountName'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','DeviceName','ActionType','RemoteIP','RemotePort','RemoteUrl','LocalIP','LocalPort','Protocol','InitiatingProcessFileName')
+        Specifics = @{
+            ActionType = @('','ConnectionSuccess','ConnectionFailed','ConnectionRequest','InboundConnectionAccepted','ListeningConnectionCreated','ConnectionFound')
+            Protocol   = @('','Tcp','Udp','Icmp')
+        }
+        ParseableColumns = @{
+            AdditionalFields = @{ Type = 'dynamic'; Label = 'Extended network fields' }
+        }
+        SummarizeBy = @('RemoteIP','InitiatingProcessFileName','DeviceName','RemotePort')
+    }
+
+    $tableConfigs['TomcatEvent'] = @{
+        ComputerField = 'ServerHostName'; UserField = 'SrcUserName'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','ServerHostName','EventType','SrcIpAddr','HttpRequestMethod','UrlOriginal','HttpStatusCode','HttpUserAgentOriginal')
+        Specifics = @{
+            EventType     = @('','access','error','catalina')
+            EventSeverity = @('','info','warn','error','fatal')
+        }
+        ParseableColumns = @{
+            ClientIdentity        = @{ Type = 'dynamic'; Label = 'Client identity data' }
+            HttpRequestMethod     = @{ Type = 'dynamic'; Label = 'HTTP method (dynamic)' }
+            UrlOriginal           = @{ Type = 'dynamic'; Label = 'Request URL (dynamic)' }
+            HttpStatusCode        = @{ Type = 'dynamic'; Label = 'HTTP status code (dynamic)' }
+            HttpUserAgentOriginal = @{ Type = 'dynamic'; Label = 'User agent (dynamic)' }
+        }
+        SummarizeBy = @('ServerHostName','SrcIpAddr','HttpStatusCode','EventType')
+    }
+
+    $tableConfigs['DeviceImageLoadEvents'] = @{
+        ComputerField = 'DeviceName'; UserField = 'InitiatingProcessAccountName'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','DeviceName','FileName','FolderPath','SHA256','InitiatingProcessFileName','InitiatingProcessCommandLine')
+        Specifics = @{
+            ActionType = @('','ImageLoaded')
+        }
+        ParseableColumns = @{}
+        SummarizeBy = @('DeviceName','FileName','InitiatingProcessFileName')
+    }
+
+    $tableConfigs['DeviceNetworkInfo'] = @{
+        ComputerField = 'DeviceName'; UserField = ''; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','DeviceName','NetworkAdapterName','NetworkAdapterType','NetworkAdapterStatus','MacAddress','IPv4Dhcp')
+        Specifics = @{
+            NetworkAdapterType   = @('','Ethernet','Wireless80211','Tunnel','Loopback')
+            NetworkAdapterStatus = @('','Up','Down','Disconnected')
+        }
+        ParseableColumns = @{
+            ConnectedNetworks = @{ Type = 'dynamic'; Label = 'Connected network info' }
+            DefaultGateways   = @{ Type = 'dynamic'; Label = 'Gateway addresses' }
+            DnsAddresses      = @{ Type = 'dynamic'; Label = 'DNS server addresses' }
+            IPAddresses       = @{ Type = 'dynamic'; Label = 'Assigned IP addresses' }
+        }
+        SummarizeBy = @('DeviceName','NetworkAdapterType','NetworkAdapterStatus')
+    }
+
+    $tableConfigs['DeviceLogonEvents'] = @{
+        ComputerField = 'DeviceName'; UserField = 'AccountName'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','DeviceName','AccountName','ActionType','LogonType','RemoteIP','RemotePort','Protocol','FailureReason','IsLocalAdmin')
+        Specifics = @{
+            ActionType = @('','LogonSuccess','LogonFailed','LogonAttempted')
+            LogonType  = @('','Interactive','RemoteInteractive','Network','Batch','Service','Unlock','CachedInteractive')
+            Protocol   = @('','Kerberos','NTLM','Negotiate')
+        }
+        ParseableColumns = @{
+            AdditionalFields = @{ Type = 'dynamic'; Label = 'Extended logon fields' }
+        }
+        SummarizeBy = @('DeviceName','AccountName','ActionType','LogonType','RemoteIP')
+    }
+
+    $tableConfigs['SigninLogs'] = @{
+        ComputerField = ''; UserField = 'UserPrincipalName'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','UserPrincipalName','AppDisplayName','IPAddress','Location','ResultType','ConditionalAccessStatus','ClientAppUsed','UserAgent')
+        Specifics = @{
+            ResultType                = @('','0','50126','50053','50055','50056','50057','50058','50074','50076','50079','53003','530032','700016')
+            ConditionalAccessStatus   = @('','success','failure','notApplied')
+            RiskLevelAggregated       = @('','none','low','medium','high')
+            AuthenticationRequirement = @('','singleFactorAuthentication','multiFactorAuthentication')
+        }
+        ParseableColumns = @{
+            DeviceDetail                 = @{ Type = 'dynamic'; Label = 'Device properties' }
+            LocationDetails              = @{ Type = 'dynamic'; Label = 'Geolocation data' }
+            MfaDetail                    = @{ Type = 'dynamic'; Label = 'MFA challenge detail' }
+            Status                       = @{ Type = 'dynamic'; Label = 'Sign-in status detail' }
+            ConditionalAccessPolicies    = @{ Type = 'dynamic'; Label = 'CA policy eval results' }
+            TokenProtectionStatusDetails = @{ Type = 'dynamic'; Label = 'Token protection detail' }
+            AppliedEventListeners        = @{ Type = 'dynamic'; Label = 'Event listener actions' }
+            Agent                        = @{ Type = 'dynamic'; Label = 'Agent properties' }
+        }
+        SummarizeBy = @('UserPrincipalName','AppDisplayName','IPAddress','ResultType')
+    }
+
+    $tableConfigs['AuditLogs'] = @{
+        ComputerField = ''; UserField = 'Identity'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','OperationName','Identity','Result','ResultReason','LoggedByService','ActivityDisplayName','Category')
+        Specifics = @{
+            Category = @('','ApplicationManagement','UserManagement','GroupManagement','RoleManagement','DirectoryManagement','DeviceManagement','Policy','Other')
+            Result   = @('','success','failure')
+        }
+        ParseableColumns = @{
+            AdditionalDetails = @{ Type = 'dynamic'; Label = 'Operation details' }
+            InitiatedBy       = @{ Type = 'dynamic'; Label = 'Initiating actor' }
+            TargetResources   = @{ Type = 'dynamic'; Label = 'Target resource info' }
+        }
+        SummarizeBy = @('OperationName','Identity','Result','Category')
+    }
+
+    $tableConfigs['SecurityIncident'] = @{
+        ComputerField = ''; UserField = 'ModifiedBy'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','Title','Severity','Status','Classification','IncidentNumber','ProviderName','IncidentUrl')
+        Specifics = @{
+            Severity       = @('','High','Medium','Low','Informational')
+            Status         = @('','New','Active','Closed')
+            Classification = @('','TruePositive','FalsePositive','BenignPositive','Undetermined')
+        }
+        ParseableColumns = @{
+            Owner        = @{ Type = 'dynamic'; Label = 'Incident owner info' }
+            Comments     = @{ Type = 'dynamic'; Label = 'Incident comments' }
+            Tasks        = @{ Type = 'dynamic'; Label = 'Incident tasks' }
+            Labels       = @{ Type = 'dynamic'; Label = 'Incident labels' }
+            AdditionalData = @{ Type = 'dynamic'; Label = 'Extended incident data' }
+        }
+        SummarizeBy = @('Severity','Status','Classification','ProviderName')
+    }
+
+    $tableConfigs['SecurityAlert'] = @{
+        ComputerField = 'CompromisedEntity'; UserField = ''; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','AlertName','AlertSeverity','Description','ProviderName','Status','CompromisedEntity','Tactics','Techniques')
+        Specifics = @{
+            AlertSeverity = @('','High','Medium','Low','Informational')
+            Status        = @('','New','InProgress','Resolved','Dismissed')
+            ProviderName  = @('','Azure Sentinel','MDATP','MCAS','AIPD','ASC','AATP','Office 365')
+        }
+        ParseableColumns = @{
+            ExtendedProperties = @{ Type = 'json_string'; Label = 'Extended alert properties (JSON in string)' }
+            Entities           = @{ Type = 'json_string'; Label = 'Alert entities (JSON in string)' }
+        }
+        SummarizeBy = @('AlertName','AlertSeverity','ProviderName','CompromisedEntity')
+    }
+
+    $tableConfigs['Anomalies'] = @{
+        ComputerField = 'SourceDevice'; UserField = 'UserPrincipalName'; TimeField = 'TimeGenerated'
+        DefaultColumns = @('TimeGenerated','RuleName','Score','UserPrincipalName','SourceIpAddress','SourceDevice','DestinationIpAddress','Tactics','Techniques')
+        Specifics = @{
+            RuleStatus = @('','Production','Flighting')
+            Tactics    = @('','InitialAccess','Execution','Persistence','PrivilegeEscalation','DefenseEvasion','CredentialAccess','Discovery','LateralMovement','Collection','Exfiltration','CommandAndControl','Impact')
+        }
+        ParseableColumns = @{
+            SourceLocation     = @{ Type = 'dynamic'; Label = 'Source geo location' }
+            DestinationLocation = @{ Type = 'dynamic'; Label = 'Dest geo location' }
+            ActivityInsights   = @{ Type = 'dynamic'; Label = 'Activity behavior insights' }
+            DeviceInsights     = @{ Type = 'dynamic'; Label = 'Device behavior insights' }
+            UserInsights       = @{ Type = 'dynamic'; Label = 'User behavior insights' }
+            AnomalyReasons     = @{ Type = 'dynamic'; Label = 'Anomaly reason breakdown' }
+            Entities           = @{ Type = 'dynamic'; Label = 'Related entities' }
+            ExtendedProperties = @{ Type = 'dynamic'; Label = 'Extended anomaly properties' }
+            AnomalyDetails     = @{ Type = 'dynamic'; Label = 'Anomaly detail payload' }
+        }
+        SummarizeBy = @('RuleName','UserPrincipalName','SourceIpAddress','Tactics')
+    }
+
+    # ================================================================
+    # PARSE RAW SCHEMAS AND MERGE WITH CONFIGS
+    # ================================================================
+    $script:TableDefinitions = @{}
+
+    foreach ($tableName in ($tableConfigs.Keys | Sort-Object)) {
+        $cfg = $tableConfigs[$tableName]
+        $rawStr = $rawSchemas[$tableName]
+
+        # Parse "ColName:type" pairs
+        $availCols = [System.Collections.Generic.List[string]]::new()
+        $colTypes  = @{}
+        if ($rawStr) {
+            foreach ($pair in ($rawStr -split ',\s*')) {
+                $parts = $pair.Trim() -split ':'
+                if ($parts.Count -ge 2) {
+                    $colName = $parts[0].Trim()
+                    $colType = $parts[1].Trim()
+                    $availCols.Add($colName)
+                    $colTypes[$colName] = $colType
+                }
+            }
+        }
+
+        $script:TableDefinitions[$tableName] = @{
+            ComputerField    = $cfg.ComputerField
+            UserField        = $cfg.UserField
+            TimeField        = $cfg.TimeField
+            DefaultColumns   = $cfg.DefaultColumns
+            AvailableColumns = [string[]]$availCols
+            ColumnTypes      = $colTypes
+            Specifics        = $cfg.Specifics
+            ParseableColumns = $cfg.ParseableColumns
+            SummarizeBy      = $cfg.SummarizeBy
+        }
+    }
+}

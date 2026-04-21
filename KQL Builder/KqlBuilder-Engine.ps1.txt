@@ -1,0 +1,375 @@
+<#
+.SYNOPSIS
+    KQL query builder engine with type-aware input validation and parse expression generation.
+.NOTES
+    Provides: Build-KqlQuery, Test-FieldValue, Get-ParseKql
+#>
+
+# ================================================================
+# TYPE-AWARE INPUT VALIDATION
+# ================================================================
+function Test-FieldValue {
+    <#
+    .SYNOPSIS
+        Validates a user-supplied value against the expected KQL column type.
+        Returns a hashtable: @{ Valid = $true/$false; Message = '...' }
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Value,
+        [string]$ColumnType,
+        [string]$FieldName = 'Field'
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return @{ Valid = $true; Message = '' }
+    }
+
+    switch ($ColumnType) {
+        'int' {
+            if ($Value -notmatch '^\-?\d+$') {
+                return @{ Valid = $false; Message = "$FieldName expects an integer value (got: $Value)" }
+            }
+            $parsed = 0
+            if (-not [int]::TryParse($Value, [ref]$parsed)) {
+                return @{ Valid = $false; Message = "$FieldName value out of int32 range" }
+            }
+        }
+        'long' {
+            if ($Value -notmatch '^\-?\d+$') {
+                return @{ Valid = $false; Message = "$FieldName expects a long integer value (got: $Value)" }
+            }
+            $parsed = [long]0
+            if (-not [long]::TryParse($Value, [ref]$parsed)) {
+                return @{ Valid = $false; Message = "$FieldName value out of int64 range" }
+            }
+        }
+        'real' {
+            if ($Value -notmatch '^\-?\d+(\.\d+)?$') {
+                return @{ Valid = $false; Message = "$FieldName expects a numeric value (got: $Value)" }
+            }
+        }
+        'datetime' {
+            # Accept ISO 8601, ago() syntax, or datetime() literal
+            if ($Value -notmatch '^\d{4}-\d{2}-\d{2}' -and
+                $Value -notmatch '^ago\(' -and
+                $Value -notmatch '^datetime\(' -and
+                $Value -notmatch '^now\(') {
+                return @{ Valid = $false; Message = "$FieldName expects datetime format (ISO 8601, ago(), datetime(), or now())" }
+            }
+        }
+        'bool' {
+            if ($Value -notin @('true','false','True','False','1','0')) {
+                return @{ Valid = $false; Message = "$FieldName expects true or false (got: $Value)" }
+            }
+        }
+        'dynamic' {
+            # Dynamic fields accept anything, but warn if not JSON-shaped
+            if ($Value -notmatch '^\s*[\{\[]' -and $Value -notmatch '^\s*"') {
+                # Not an error, just a note
+            }
+        }
+        'string' {
+            # Strings accept anything, but validate sub-types by field name
+            if ($FieldName -match 'IP$|IpAddress$|Ip$|IPAddress$|ClientAddress$|RemoteIp$|SourceIp$|DestinationIp$|CallerIpAddress$') {
+                if ($Value -notmatch '^(\d{1,3}\.){3}\d{1,3}$' -and          # IPv4 exact
+                    $Value -notmatch '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$' -and   # IPv4 CIDR
+                    $Value -notmatch '^[0-9a-fA-F:]+$' -and                    # IPv6
+                    $Value -notmatch '^\d{1,3}\.\d{1,3}\.' -and                # IPv4 partial
+                    $Value -ne '*') {
+                    return @{ Valid = $false; Message = "$FieldName expects an IP address format (got: $Value)" }
+                }
+            }
+            if ($FieldName -match 'Hash$|MD5$|SHA1$|SHA256$') {
+                $cleanHash = $Value.Trim()
+                if ($cleanHash -notmatch '^[0-9a-fA-F]+$') {
+                    return @{ Valid = $false; Message = "$FieldName expects a hexadecimal hash value (got: $Value)" }
+                }
+                $len = $cleanHash.Length
+                if ($len -notin @(32, 40, 64)) {
+                    return @{ Valid = $false; Message = "$FieldName hash length $len does not match MD5 (32), SHA1 (40), or SHA256 (64)" }
+                }
+            }
+            if ($FieldName -match 'Port$') {
+                if ($Value -match '^\d+$') {
+                    $portNum = [int]$Value
+                    if ($portNum -lt 0 -or $portNum -gt 65535) {
+                        return @{ Valid = $false; Message = "$FieldName port must be 0-65535 (got: $Value)" }
+                    }
+                }
+            }
+        }
+    }
+
+    return @{ Valid = $true; Message = '' }
+}
+
+function Test-IpFormat {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $true }
+    return ($Value -match '^(\d{1,3}\.){3}\d{1,3}$' -or
+            $Value -match '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$' -or
+            $Value -match '^[0-9a-fA-F:]+$' -or
+            $Value -match '^\d{1,3}\.\d{1,3}\.')
+}
+
+function Test-HashFormat {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $true }
+    if ($Value -notmatch '^[0-9a-fA-F]+$') { return $false }
+    return ($Value.Length -in @(32, 40, 64))
+}
+
+function Test-IntegerFormat {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $true }
+    return ($Value -match '^\-?\d+$')
+}
+
+# ================================================================
+# PARSE EXPRESSION GENERATORS
+# ================================================================
+function Get-ParseKql {
+    <#
+    .SYNOPSIS
+        Generates KQL parse/extend expressions for structured columns.
+    .PARAMETER ColumnName
+        The column to parse.
+    .PARAMETER ParseType
+        xml, dynamic, json_string, or kv
+    .PARAMETER Strategy
+        'auto' for full unpack, 'fields' for specific field extraction
+    .PARAMETER FieldList
+        When Strategy='fields', the specific fields to extract
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$ColumnName,
+        [string]$ParseType,
+        [string]$Strategy = 'auto',
+        [string[]]$FieldList = @()
+    )
+
+    $sb = New-Object System.Text.StringBuilder
+
+    switch ($ParseType) {
+        'xml' {
+            if ($Strategy -eq 'auto') {
+                # Full XML unpack using parse_xml + bag approach
+                [void]$sb.AppendLine("| extend _xmlParsed = parse_xml($ColumnName)")
+                [void]$sb.AppendLine("| extend _eventDataNodes = _xmlParsed.DataItem.EventData.Data")
+                [void]$sb.AppendLine("| mv-apply _d = _eventDataNodes on (")
+                [void]$sb.AppendLine("    summarize _Bag = make_bag(bag_pack(tostring(_d['@Name']), tostring(_d['#text'])))")
+                [void]$sb.AppendLine(")")
+                [void]$sb.AppendLine("| evaluate bag_unpack(_Bag, 'evt_')")
+            } else {
+                # Lightweight: extract specific fields without mv-apply
+                [void]$sb.AppendLine("| extend _xmlParsed = parse_xml($ColumnName)")
+                foreach ($field in $FieldList) {
+                    $safe = $field -replace '[^a-zA-Z0-9_]', ''
+                    [void]$sb.AppendLine("| extend evt_$safe = tostring(extract_all(@'Name=""$field""[^>]*>([^<]+)', tostring($ColumnName))[0])")
+                }
+            }
+        }
+        'dynamic' {
+            if ($Strategy -eq 'auto') {
+                # Lightweight fallback: todynamic + bag_keys enumeration
+                [void]$sb.AppendLine("| extend _parsed_$ColumnName = todynamic(tostring($ColumnName))")
+                [void]$sb.AppendLine("| extend _keys_$ColumnName = bag_keys(_parsed_$ColumnName)")
+                # If the column is already dynamic type, skip todynamic wrapper
+                [void]$sb.AppendLine("// To unpack all keys: evaluate bag_unpack(_parsed_$ColumnName, '${ColumnName}_')")
+            } else {
+                [void]$sb.AppendLine("| extend _parsed_$ColumnName = todynamic(tostring($ColumnName))")
+                foreach ($field in $FieldList) {
+                    $safe = $field -replace '[^a-zA-Z0-9_]', ''
+                    [void]$sb.AppendLine("| extend ${ColumnName}_$safe = tostring(_parsed_${ColumnName}.$field)")
+                }
+            }
+        }
+        'json_string' {
+            # String column that contains JSON (e.g., SecurityAlert.ExtendedProperties)
+            if ($Strategy -eq 'auto') {
+                [void]$sb.AppendLine("| extend _json_$ColumnName = todynamic($ColumnName)")
+                [void]$sb.AppendLine("| extend _keys_$ColumnName = bag_keys(_json_$ColumnName)")
+                [void]$sb.AppendLine("// To unpack all keys: evaluate bag_unpack(_json_$ColumnName, '${ColumnName}_')")
+            } else {
+                [void]$sb.AppendLine("| extend _json_$ColumnName = todynamic($ColumnName)")
+                foreach ($field in $FieldList) {
+                    $safe = $field -replace '[^a-zA-Z0-9_]', ''
+                    [void]$sb.AppendLine("| extend ${ColumnName}_$safe = tostring(_json_${ColumnName}.$field)")
+                }
+            }
+        }
+        'kv' {
+            if ($Strategy -eq 'auto') {
+                # Auto key-value parse (semicolon or space delimited)
+                [void]$sb.AppendLine("| parse-kv $ColumnName as (") 
+                [void]$sb.AppendLine("    // Add expected key names here, e.g.:")
+                [void]$sb.AppendLine("    // src:string, dst:string, action:string")
+                [void]$sb.AppendLine(") with (pair_delimiter=';', kv_delimiter='=')")
+            } else {
+                $kvFields = $FieldList | ForEach-Object { "$_`:string" }
+                [void]$sb.AppendLine("| parse-kv $ColumnName as ($($kvFields -join ', ')) with (pair_delimiter=';', kv_delimiter='=')")
+            }
+        }
+    }
+
+    return $sb.ToString()
+}
+
+# ================================================================
+# MAIN QUERY BUILDER
+# ================================================================
+function Build-KqlQuery {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        $State
+    )
+
+    $tableName = $State.TableName
+    $tableDef  = $script:TableDefinitions[$tableName]
+    if (-not $tableDef) { return "// ERROR: Unknown table '$tableName'" }
+
+    $sb = New-Object System.Text.StringBuilder
+    $errors = [System.Collections.Generic.List[string]]::new()
+
+    # ---- Validation pass ----
+    if ($State.F_IP -and -not (Test-IpFormat $State.F_IP)) {
+        $errors.Add("IP Address: invalid format '$($State.F_IP)' - expected IPv4, IPv6, or CIDR notation")
+    }
+    if ($State.F_Hash -and -not (Test-HashFormat $State.F_Hash)) {
+        $errors.Add("File Hash: invalid format '$($State.F_Hash)' - expected MD5 (32), SHA1 (40), or SHA256 (64) hex chars")
+    }
+    foreach ($k in $State.Specifics.Keys) {
+        $v = $State.Specifics[$k]
+        if ($v -and $tableDef.ColumnTypes.ContainsKey($k)) {
+            $check = Test-FieldValue -Value $v -ColumnType $tableDef.ColumnTypes[$k] -FieldName $k
+            if (-not $check.Valid) { $errors.Add($check.Message) }
+        }
+    }
+
+    if ($errors.Count -gt 0) {
+        [void]$sb.AppendLine("// ================================================================")
+        [void]$sb.AppendLine("// VALIDATION ERRORS - fix these before running")
+        [void]$sb.AppendLine("// ================================================================")
+        foreach ($e in $errors) { [void]$sb.AppendLine("// [!] $e") }
+        [void]$sb.AppendLine("// ================================================================")
+        [void]$sb.AppendLine("")
+    }
+
+    # ---- Header ----
+    [void]$sb.AppendLine("// ================================================================")
+    [void]$sb.AppendLine("// Name: $($State.Name)")
+    if ($State.Tags) { [void]$sb.AppendLine("// Tags: $($State.Tags)") }
+    [void]$sb.AppendLine("// Table: $tableName")
+    [void]$sb.AppendLine("// Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm')")
+    [void]$sb.AppendLine("// ================================================================")
+    [void]$sb.AppendLine($tableName)
+
+    # ---- Time filter ----
+    if ($State.TimeRange -and $State.TimeRange -ne 'all') {
+        [void]$sb.AppendLine("| where $($tableDef.TimeField) > ago($($State.TimeRange))")
+    }
+
+    # ---- Computer filter ----
+    if ($State.Computer -and $tableDef.ComputerField) {
+        [void]$sb.AppendLine("| where $($tableDef.ComputerField) =~ `"$($State.Computer)`"")
+    }
+
+    # ---- User filter ----
+    if ($State.User -and $tableDef.UserField) {
+        [void]$sb.AppendLine("| where $($tableDef.UserField) has `"$($State.User)`"")
+    }
+
+    # ---- Table-specific filters (Specifics) ----
+    foreach ($k in $State.Specifics.Keys) {
+        $v = $State.Specifics[$k]
+        if (-not $v) { continue }
+        $colType = $tableDef.ColumnTypes[$k]
+        if ($colType -in @('int','long','real')) {
+            [void]$sb.AppendLine("| where $k == $v")
+        } elseif ($colType -eq 'bool') {
+            [void]$sb.AppendLine("| where $k == $($v.ToLower())")
+        } else {
+            [void]$sb.AppendLine("| where $k =~ `"$v`"")
+        }
+    }
+
+    # ---- Advanced dynamic filters ----
+    # IP
+    if ($State.F_IP) {
+        $ipCols = @('IpAddress','RemoteIP','LocalIP','SourceIP','DestinationIP','ClientIPAddress','RemoteIpAddress',
+                     'SourceIp','DestinationIp','RemoteIp','MaliciousIp','MaliciousIP','cIP','sIP','SrcIpAddr',
+                     'IPAddress','SourceIPAddress','DestinationIPAddress','CallerIpAddress','SourceIpAddress',
+                     'DestinationIpAddress','FileOriginIP','RequestSourceIP','GlobalSecureAccessIpAddress',
+                     'IPAddressFromResourceProvider') |
+            Where-Object { $_ -in $tableDef.AvailableColumns }
+        if ($ipCols.Count -gt 0) {
+            $conds = $ipCols | ForEach-Object { "$_ has `"$($State.F_IP)`"" }
+            [void]$sb.AppendLine("| where " + ($conds -join " or "))
+        } else {
+            [void]$sb.AppendLine("// Note: no recognized IP columns in $tableName for filter: $($State.F_IP)")
+        }
+    }
+
+    # Process
+    if ($State.F_Process) {
+        $pCols = @('ProcessName','FileName','InitiatingProcessFileName','ParentProcessName','NewProcessName',
+                    'FolderPath','InitiatingProcessFolderPath','CallerProcessName','DestinationProcessName',
+                    'SourceProcessName','InitiatingProcessParentFileName') |
+            Where-Object { $_ -in $tableDef.AvailableColumns }
+        if ($pCols.Count -gt 0) {
+            $conds = $pCols | ForEach-Object { "$_ contains `"$($State.F_Process)`"" }
+            [void]$sb.AppendLine("| where " + ($conds -join " or "))
+        }
+    }
+
+    # Command line
+    if ($State.F_Cmd) {
+        $cCols = @('CommandLine','ProcessCommandLine','InitiatingProcessCommandLine') |
+            Where-Object { $_ -in $tableDef.AvailableColumns }
+        if ($cCols.Count -gt 0) {
+            $conds = $cCols | ForEach-Object { "$_ contains `"$($State.F_Cmd)`"" }
+            [void]$sb.AppendLine("| where " + ($conds -join " or "))
+        }
+    }
+
+    # Hash
+    if ($State.F_Hash) {
+        $hCols = @('SHA256','SHA1','MD5','FileHash','InitiatingProcessSHA256','InitiatingProcessSHA1','InitiatingProcessMD5') |
+            Where-Object { $_ -in $tableDef.AvailableColumns }
+        if ($hCols.Count -gt 0) {
+            $conds = $hCols | ForEach-Object { "$_ =~ `"$($State.F_Hash)`"" }
+            [void]$sb.AppendLine("| where " + ($conds -join " or "))
+        }
+    }
+
+    # ---- Parse expressions ----
+    if ($State.ParseColumns -and $State.ParseColumns.Count -gt 0) {
+        foreach ($pc in $State.ParseColumns) {
+            $parseInfo = $tableDef.ParseableColumns[$pc.Column]
+            if ($parseInfo) {
+                $parseKql = Get-ParseKql -ColumnName $pc.Column -ParseType $parseInfo.Type -Strategy $pc.Strategy -FieldList $pc.Fields
+                [void]$sb.Append($parseKql)
+            }
+        }
+    }
+
+    # ---- Output mode ----
+    if ($State.OutputMode -eq 'Summarized' -and $tableDef.SummarizeBy.Count -gt 0) {
+        $by = $tableDef.SummarizeBy -join ', '
+        [void]$sb.AppendLine("| summarize EventCount=count(), First=min($($tableDef.TimeField)), Last=max($($tableDef.TimeField)) by $by")
+        [void]$sb.AppendLine("| order by EventCount desc")
+    } elseif ($State.Columns -and $State.Columns.Count -gt 0) {
+        [void]$sb.AppendLine("| project " + ($State.Columns -join ', '))
+        [void]$sb.AppendLine("| order by $($tableDef.TimeField) desc")
+    }
+
+    # ---- Limit ----
+    if ($State.Limit -gt 0) {
+        [void]$sb.AppendLine("| take $($State.Limit)")
+    }
+
+    return $sb.ToString()
+}

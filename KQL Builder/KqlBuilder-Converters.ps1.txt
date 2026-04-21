@@ -1,0 +1,694 @@
+<#
+.SYNOPSIS
+    Rule-to-KQL converters: Snort, Sigma, YARA.
+.NOTES
+    Each converter takes raw rule text and outputs KQL query strings.
+    Requires: KqlBuilder-YamlParser.ps1 (for Sigma)
+              KqlBuilder-Schemas.ps1 (for table lookups)
+#>
+
+# ================================================================
+# SNORT TO KQL (L7 Web / CEF / IIS)
+# ================================================================
+function Convert-SnortToKql {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$RuleText,
+        [string]$TargetTable = 'CommonSecurityLog',
+        [string]$TimeRange = '1d'
+    )
+
+    $lines = $RuleText -split "\r?\n" | Where-Object { $_.Trim() -ne '' }
+    $sb = New-Object System.Text.StringBuilder
+
+    foreach ($rule in $lines) {
+        $trimmed = $rule.Trim()
+
+        # Skip comments
+        if ($trimmed.StartsWith('#')) {
+            [void]$sb.AppendLine("// $trimmed")
+            [void]$sb.AppendLine("")
+            continue
+        }
+
+        # Must be a valid Snort rule with action + header + options
+        if ($trimmed -notmatch '^\s*(alert|log|pass|drop|reject|sdrop)\s+') {
+            [void]$sb.AppendLine("// Skipped (not a recognized Snort rule): $trimmed")
+            [void]$sb.AppendLine("")
+            continue
+        }
+
+        # Extract message
+        $msg = "Converted Snort Rule"
+        if ($trimmed -match 'msg:\s*"([^"]+)"') { $msg = $Matches[1] }
+
+        # Extract SID
+        $sid = ""
+        if ($trimmed -match 'sid:\s*(\d+)') { $sid = $Matches[1] }
+
+        # Extract flow direction
+        $flowDir = ""
+        if ($trimmed -match 'flow:\s*([^;]+)') { $flowDir = $Matches[1].Trim() }
+
+        # Check for L7 content (content, pcre, http modifiers)
+        $hasContent = ($trimmed -match 'content:|pcre:|http_uri|http_header|http_method|http_cookie|uricontent:')
+
+        if (-not $hasContent) {
+            # Network-layer only rule - extract IP/port info from header
+            $headerKql = Convert-SnortHeader -Rule $trimmed -TimeRange $TimeRange
+            if ($headerKql) {
+                [void]$sb.AppendLine("// Snort SID:$sid - $msg (Network Layer)")
+                [void]$sb.Append($headerKql)
+            } else {
+                [void]$sb.AppendLine("// Skipped (no convertible payload or network indicators): $msg")
+            }
+            [void]$sb.AppendLine("")
+            continue
+        }
+
+        # L7 conversion
+        [void]$sb.AppendLine("// ================================================================")
+        [void]$sb.AppendLine("// Snort SID:$sid - $msg")
+        [void]$sb.AppendLine("// ================================================================")
+
+        if ($TargetTable -eq 'CommonSecurityLog') {
+            [void]$sb.AppendLine("CommonSecurityLog")
+            [void]$sb.AppendLine("| where TimeGenerated > ago($TimeRange)")
+
+            # Extract and convert content matches
+            $contentMatches = [regex]::Matches($trimmed, '(?i)content:\s*"([^"]+)"')
+            $nocase = ($trimmed -match 'nocase;')
+            $negatedContents = [regex]::Matches($trimmed, '(?i)content:\s*!"([^"]+)"')
+
+            foreach ($cm in $contentMatches) {
+                $val = $cm.Groups[1].Value
+                $op = if ($nocase) { 'contains' } else { 'contains_cs' }
+
+                # Check for HTTP method patterns
+                if ($val -match '^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|CONNECT|TRACE)\s*(.*)$') {
+                    [void]$sb.AppendLine("| where RequestMethod =~ `"$($Matches[1])`"")
+                    $uriPart = $Matches[2].Trim()
+                    if ($uriPart) {
+                        [void]$sb.AppendLine("| where RequestURL $op `"$uriPart`"")
+                    }
+                } elseif ($val -match '^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)$') {
+                    [void]$sb.AppendLine("| where RequestMethod =~ `"$val`"")
+                } elseif ($val -match '^Host:\s*(.+)$') {
+                    # HTTP Host header
+                    [void]$sb.AppendLine("| where DestinationHostName $op `"$($Matches[1].Trim())`" or Message $op `"$($Matches[1].Trim())`"")
+                } elseif ($val -match '^User-Agent:\s*(.+)$') {
+                    [void]$sb.AppendLine("| where RequestClientApplication $op `"$($Matches[1].Trim())`" or Message $op `"$($Matches[1].Trim())`"")
+                } elseif ($val -match '^Cookie:\s*(.+)$') {
+                    [void]$sb.AppendLine("| where RequestCookies $op `"$($Matches[1].Trim())`" or AdditionalExtensions $op `"$($Matches[1].Trim())`"")
+                } else {
+                    # General content match across URL + extensions + message
+                    [void]$sb.AppendLine("| where RequestURL $op `"$val`" or AdditionalExtensions $op `"$val`" or Message $op `"$val`"")
+                }
+            }
+
+            # Negated content
+            foreach ($nc in $negatedContents) {
+                $nval = $nc.Groups[1].Value
+                [void]$sb.AppendLine("| where not(RequestURL contains `"$nval`") and not(Message contains `"$nval`")")
+            }
+
+            # PCRE
+            $pcreMatches = [regex]::Matches($trimmed, '(?i)pcre:\s*"([^"]+)"')
+            foreach ($pm in $pcreMatches) {
+                $pattern = $pm.Groups[1].Value -replace '^/|/[a-zA-Z]*$', ''
+                # Escape KQL regex special chars that differ from PCRE
+                [void]$sb.AppendLine("| where RequestURL matches regex @`"$pattern`" or Message matches regex @`"$pattern`"")
+            }
+
+            [void]$sb.AppendLine("| project TimeGenerated, DeviceVendor, DeviceProduct, SourceIP, DestinationIP, DestinationPort, RequestMethod, RequestURL, Message, AdditionalExtensions")
+
+        } elseif ($TargetTable -eq 'W3CIISLog') {
+            [void]$sb.AppendLine("W3CIISLog")
+            [void]$sb.AppendLine("| where TimeGenerated > ago($TimeRange)")
+
+            foreach ($cm in [regex]::Matches($trimmed, '(?i)content:\s*"([^"]+)"')) {
+                $val = $cm.Groups[1].Value
+                if ($val -match '^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)$') {
+                    [void]$sb.AppendLine("| where csMethod =~ `"$val`"")
+                } else {
+                    [void]$sb.AppendLine("| where csUriStem contains `"$val`" or csUriQuery contains `"$val`"")
+                }
+            }
+
+            $pcreMatch = [regex]::Match($trimmed, '(?i)pcre:\s*"([^"]+)"')
+            if ($pcreMatch.Success) {
+                $pattern = $pcreMatch.Groups[1].Value -replace '^/|/[a-zA-Z]*$', ''
+                [void]$sb.AppendLine("| where csUriStem matches regex @`"$pattern`" or csUriQuery matches regex @`"$pattern`"")
+            }
+
+            [void]$sb.AppendLine("| project TimeGenerated, Computer, cIP, csMethod, csUriStem, csUriQuery, scStatus, csUserAgent")
+        }
+
+        [void]$sb.AppendLine("")
+    }
+
+    return $sb.ToString()
+}
+
+function Convert-SnortHeader {
+    param([string]$Rule, [string]$TimeRange = '1d')
+
+    # Parse: action proto src_ip src_port -> dst_ip dst_port
+    if ($Rule -match '^\s*\w+\s+(\w+)\s+(\S+)\s+(\S+)\s+[-<>]+\s+(\S+)\s+(\S+)') {
+        $proto = $Matches[1]
+        $srcIp = $Matches[2]; $srcPort = $Matches[3]
+        $dstIp = $Matches[4]; $dstPort = $Matches[5]
+
+        $sb = New-Object System.Text.StringBuilder
+        [void]$sb.AppendLine("CommonSecurityLog")
+        [void]$sb.AppendLine("| where TimeGenerated > ago($TimeRange)")
+
+        if ($proto -notin @('any','ip')) {
+            [void]$sb.AppendLine("| where Protocol =~ `"$proto`"")
+        }
+        if ($srcIp -ne 'any' -and $srcIp -notmatch '^\$') {
+            [void]$sb.AppendLine("| where SourceIP == `"$srcIp`"")
+        }
+        if ($dstIp -ne 'any' -and $dstIp -notmatch '^\$') {
+            [void]$sb.AppendLine("| where DestinationIP == `"$dstIp`"")
+        }
+        if ($dstPort -ne 'any' -and $dstPort -notmatch '^\$') {
+            [void]$sb.AppendLine("| where DestinationPort == $dstPort")
+        }
+        if ($srcPort -ne 'any' -and $srcPort -notmatch '^\$') {
+            [void]$sb.AppendLine("| where SourcePort == $srcPort")
+        }
+
+        [void]$sb.AppendLine("| project TimeGenerated, DeviceVendor, SourceIP, SourcePort, DestinationIP, DestinationPort, Protocol, DeviceAction, Message")
+        return $sb.ToString()
+    }
+    return $null
+}
+
+# ================================================================
+# SIGMA TO KQL
+# ================================================================
+
+# Logsource-to-table mapping
+$script:SigmaTableMap = @{
+    'windows/security'          = 'SecurityEvent'
+    'windows/sysmon'            = 'SecurityEvent'
+    'windows/process_creation'  = 'DeviceProcessEvents'
+    'windows/network_connection' = 'DeviceNetworkEvents'
+    'windows/file_event'        = 'DeviceFileEvents'
+    'windows/registry_event'    = 'DeviceRegistryEvents'
+    'windows/image_load'        = 'DeviceImageLoadEvents'
+    'linux/syslog'              = 'Syslog'
+    'webserver'                 = 'W3CIISLog'
+    'proxy'                     = 'CommonSecurityLog'
+    'firewall'                  = 'CommonSecurityLog'
+    'azure/signinlogs'          = 'SigninLogs'
+    'azure/auditlogs'           = 'AuditLogs'
+    'm365/threat_detection'     = 'SecurityAlert'
+}
+
+# Sigma field-to-KQL field mappings per table context
+$script:SigmaFieldMap = @{
+    # Process creation fields
+    'Image'             = 'FileName'
+    'OriginalFileName'  = 'ProcessVersionInfoOriginalFileName'
+    'CommandLine'       = 'ProcessCommandLine'
+    'ParentImage'       = 'InitiatingProcessFileName'
+    'ParentCommandLine' = 'InitiatingProcessCommandLine'
+    'User'              = 'AccountName'
+    'IntegrityLevel'    = 'ProcessIntegrityLevel'
+    'Hashes'            = 'SHA256'
+    'sha256'            = 'SHA256'
+    'md5'               = 'MD5'
+    'sha1'              = 'SHA1'
+    # Network fields
+    'DestinationIp'     = 'RemoteIP'
+    'DestinationPort'   = 'RemotePort'
+    'SourceIp'          = 'LocalIP'
+    'SourcePort'        = 'LocalPort'
+    # Registry fields
+    'TargetObject'      = 'RegistryKey'
+    'Details'           = 'RegistryValueData'
+    # File fields
+    'TargetFilename'    = 'FolderPath'
+    # SecurityEvent fields
+    'EventID'           = 'EventID'
+    'LogonType'         = 'LogonType'
+    'TargetUserName'    = 'TargetUserName'
+    'SourceAddress'     = 'IpAddress'
+    'ServiceName'       = 'ServiceName'
+    # Generic
+    'ComputerName'      = 'Computer'
+}
+
+function Convert-SigmaToKql {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$RuleText,
+        [string]$TimeRange = '1d'
+    )
+
+    $parsed = ConvertFrom-SimpleYaml -YamlText $RuleText
+
+    $sb = New-Object System.Text.StringBuilder
+
+    # Title and metadata
+    $title = if ($parsed.title) { $parsed.title } else { 'Unnamed Sigma Rule' }
+    $description = if ($parsed.description) { $parsed.description } else { '' }
+    $level = if ($parsed.level) { $parsed.level } else { 'unknown' }
+    $sigmaId = if ($parsed.id) { $parsed.id } else { 'N/A' }
+    $status = if ($parsed.status) { $parsed.status } else { 'unknown' }
+
+    [void]$sb.AppendLine("// ================================================================")
+    [void]$sb.AppendLine("// Sigma: $title")
+    [void]$sb.AppendLine("// ID: $sigmaId | Level: $level | Status: $status")
+    if ($description) { [void]$sb.AppendLine("// $description") }
+    [void]$sb.AppendLine("// ================================================================")
+
+    # Determine target table from logsource
+    $logsource = $parsed.logsource
+    $tableName = 'SecurityEvent'  # default fallback
+
+    if ($logsource) {
+        $category = if ($logsource.category) { $logsource.category } else { '' }
+        $product  = if ($logsource.product) { $logsource.product } else { '' }
+        $service  = if ($logsource.service) { $logsource.service } else { '' }
+
+        # Build lookup key
+        $lookupKeys = @()
+        if ($product -and $service) { $lookupKeys += "$product/$service" }
+        if ($product -and $category) { $lookupKeys += "$product/$category" }
+        if ($category) { $lookupKeys += $category }
+        if ($product) { $lookupKeys += $product }
+
+        foreach ($lk in $lookupKeys) {
+            if ($script:SigmaTableMap.ContainsKey($lk)) {
+                $tableName = $script:SigmaTableMap[$lk]
+                break
+            }
+        }
+    }
+
+    [void]$sb.AppendLine("$tableName")
+    [void]$sb.AppendLine("| where TimeGenerated > ago($TimeRange)")
+
+    # Parse detection block
+    $detection = $parsed.detection
+    if (-not $detection) {
+        [void]$sb.AppendLine("// WARNING: No detection block found in rule")
+        return $sb.ToString()
+    }
+
+    $condition = if ($detection.condition) { $detection.condition } else { '' }
+
+    # Build KQL for each detection selection
+    $selectionKqls = @{}
+    foreach ($key in $detection.Keys) {
+        if ($key -eq 'condition') { continue }
+        $selectionKqls[$key] = Convert-SigmaSelection -Selection $detection[$key] -TableName $tableName
+    }
+
+    # Parse condition logic
+    if ($condition) {
+        $kqlCondition = Convert-SigmaCondition -Condition $condition -SelectionKqls $selectionKqls
+        if ($kqlCondition) {
+            [void]$sb.AppendLine($kqlCondition)
+        }
+    } else {
+        # No condition, just AND all selections
+        foreach ($selKql in $selectionKqls.Values) {
+            if ($selKql) { [void]$sb.AppendLine($selKql) }
+        }
+    }
+
+    # Default projection
+    $tableDef = $script:TableDefinitions[$tableName]
+    if ($tableDef -and $tableDef.DefaultColumns.Count -gt 0) {
+        [void]$sb.AppendLine("| project " + ($tableDef.DefaultColumns -join ', '))
+    }
+
+    return $sb.ToString()
+}
+
+function Convert-SigmaSelection {
+    param(
+        $Selection,
+        [string]$TableName
+    )
+
+    if ($Selection -is [System.Collections.IDictionary] -or $Selection -is [System.Collections.Specialized.OrderedDictionary]) {
+        $conditions = [System.Collections.Generic.List[string]]::new()
+
+        foreach ($rawKey in $Selection.Keys) {
+            $value = $Selection[$rawKey]
+
+            # Parse modifiers: field|modifier1|modifier2
+            $parts = $rawKey -split '\|'
+            $fieldName = $parts[0]
+            $modifiers = if ($parts.Count -gt 1) { $parts[1..($parts.Count - 1)] } else { @() }
+
+            # Map Sigma field to KQL column
+            $kqlField = if ($script:SigmaFieldMap.ContainsKey($fieldName)) {
+                $script:SigmaFieldMap[$fieldName]
+            } else {
+                $fieldName
+            }
+
+            # Handle value (could be string, list, or null)
+            if ($null -eq $value) {
+                $conditions.Add("isempty($kqlField)")
+                continue
+            }
+
+            $values = @()
+            if ($value -is [System.Collections.IList]) {
+                $values = @($value | ForEach-Object { $_.ToString() })
+            } else {
+                $values = @($value.ToString())
+            }
+
+            $fieldConds = [System.Collections.Generic.List[string]]::new()
+
+            foreach ($v in $values) {
+                $kqlExpr = Convert-SigmaValue -Field $kqlField -Value $v -Modifiers $modifiers
+                if ($kqlExpr) { $fieldConds.Add($kqlExpr) }
+            }
+
+            if ($fieldConds.Count -gt 1) {
+                # Multiple values for same field = OR
+                if ('all' -in $modifiers) {
+                    $conditions.Add("(" + ($fieldConds -join " and ") + ")")
+                } else {
+                    $conditions.Add("(" + ($fieldConds -join " or ") + ")")
+                }
+            } elseif ($fieldConds.Count -eq 1) {
+                $conditions.Add($fieldConds[0])
+            }
+        }
+
+        if ($conditions.Count -gt 0) {
+            return "| where " + ($conditions -join "`r`n    and ")
+        }
+    }
+
+    return ''
+}
+
+function Convert-SigmaValue {
+    param(
+        [string]$Field,
+        [string]$Value,
+        [string[]]$Modifiers
+    )
+
+    $negate = $false
+    $mods = [System.Collections.Generic.List[string]]::new($Modifiers)
+
+    # Check for 'not' modifier (custom extension, some backends use it)
+    # Sigma negation is typically via condition "not selection"
+
+    # Wildcard handling
+    $hasLeadingWild  = $Value.StartsWith('*')
+    $hasTrailingWild = $Value.EndsWith('*')
+    $innerValue = $Value.Trim('*')
+
+    if ('re' -in $mods) {
+        return "$Field matches regex @`"$Value`""
+    }
+
+    if ('contains' -in $mods) {
+        return "$Field contains `"$innerValue`""
+    }
+
+    if ('startswith' -in $mods) {
+        return "$Field startswith `"$innerValue`""
+    }
+
+    if ('endswith' -in $mods) {
+        return "$Field endswith `"$innerValue`""
+    }
+
+    if ('cidr' -in $mods) {
+        return "ipv4_is_in_range($Field, `"$Value`")"
+    }
+
+    if ('base64' -in $mods) {
+        return "$Field contains `"$innerValue`" // NOTE: base64 encoding check needed"
+    }
+
+    # Default: infer from wildcards
+    if ($hasLeadingWild -and $hasTrailingWild) {
+        return "$Field contains `"$innerValue`""
+    } elseif ($hasTrailingWild) {
+        return "$Field startswith `"$innerValue`""
+    } elseif ($hasLeadingWild) {
+        return "$Field endswith `"$innerValue`""
+    } else {
+        return "$Field =~ `"$Value`""
+    }
+}
+
+function Convert-SigmaCondition {
+    param(
+        [string]$Condition,
+        [hashtable]$SelectionKqls
+    )
+
+    # Handle common patterns:
+    # "selection"
+    # "selection and not filter"
+    # "selection1 or selection2"
+    # "1 of selection*"
+    # "all of selection*"
+
+    $cond = $Condition.Trim()
+
+    # "1 of <pattern>" or "all of <pattern>"
+    if ($cond -match '^(1|all)\s+of\s+(\S+)\*?\s*$') {
+        $quantifier = $Matches[1]
+        $prefix = $Matches[2] -replace '\*$', ''
+        $matching = $SelectionKqls.Keys | Where-Object { $_ -match "^$prefix" }
+        $parts = @()
+        foreach ($m in $matching) {
+            $kql = $SelectionKqls[$m]
+            if ($kql) { $parts += "($($kql -replace '^\| where\s*', ''))" }
+        }
+        $joiner = if ($quantifier -eq 'all') { ' and ' } else { ' or ' }
+        if ($parts.Count -gt 0) {
+            return "| where " + ($parts -join $joiner)
+        }
+        return ''
+    }
+
+    # Parse compound conditions
+    # Tokenize: split on "and", "or", "not", parens
+    $tokens = [regex]::Split($cond, '\s+(and|or|not)\s+') | Where-Object { $_.Trim() -ne '' }
+
+    $kqlParts = [System.Collections.Generic.List[string]]::new()
+    $pendingNot = $false
+
+    foreach ($token in $tokens) {
+        $t = $token.Trim()
+        if ($t -eq 'and') { $kqlParts.Add('and'); continue }
+        if ($t -eq 'or')  { $kqlParts.Add('or'); continue }
+        if ($t -eq 'not') { $pendingNot = $true; continue }
+
+        # It's a selection name
+        $selName = $t -replace '[()]', ''
+        if ($SelectionKqls.ContainsKey($selName)) {
+            $selKql = $SelectionKqls[$selName] -replace '^\| where\s*', ''
+            if ($pendingNot) {
+                $kqlParts.Add("not($selKql)")
+                $pendingNot = $false
+            } else {
+                $kqlParts.Add("($selKql)")
+            }
+        }
+    }
+
+    if ($kqlParts.Count -gt 0) {
+        return "| where " + ($kqlParts -join " ")
+    }
+    return ''
+}
+
+# ================================================================
+# YARA TO KQL
+# ================================================================
+function Convert-YaraToKql {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$RuleText,
+        [string]$TargetTable = 'DeviceFileEvents',
+        [string]$TimeRange = '1d'
+    )
+
+    $sb = New-Object System.Text.StringBuilder
+    $lines = $RuleText -split "\r?\n"
+
+    $inRule = $false; $inStrings = $false; $inCondition = $false; $inMeta = $false
+    $ruleName = ''; $ruleStrings = @{}; $conditionText = ''; $metaInfo = @{}
+
+    foreach ($line in $lines) {
+        $trimmed = $line.Trim()
+
+        # Rule start
+        if ($trimmed -match '^rule\s+(\w+)') {
+            $inRule = $true
+            $ruleName = $Matches[1]
+            $ruleStrings = @{}; $conditionText = ''; $metaInfo = @{}
+            $inStrings = $false; $inCondition = $false; $inMeta = $false
+            continue
+        }
+
+        if (-not $inRule) { continue }
+
+        # Section markers
+        if ($trimmed -eq 'meta:')      { $inMeta = $true; $inStrings = $false; $inCondition = $false; continue }
+        if ($trimmed -eq 'strings:')   { $inStrings = $true; $inMeta = $false; $inCondition = $false; continue }
+        if ($trimmed -eq 'condition:') { $inCondition = $true; $inStrings = $false; $inMeta = $false; continue }
+
+        # Rule end
+        if ($trimmed -eq '}') {
+            if ($inRule) {
+                $kql = Build-YaraKql -RuleName $ruleName -Strings $ruleStrings -Condition $conditionText -Meta $metaInfo -TargetTable $TargetTable -TimeRange $TimeRange
+                [void]$sb.Append($kql)
+                [void]$sb.AppendLine("")
+            }
+            $inRule = $false; $inStrings = $false; $inCondition = $false; $inMeta = $false
+            continue
+        }
+
+        if ($inMeta -and $trimmed -match '^\s*(\w+)\s*=\s*"?([^"]*)"?\s*$') {
+            $metaInfo[$Matches[1]] = $Matches[2]
+        }
+
+        if ($inStrings) {
+            # Text string: $var = "string"
+            if ($trimmed -match '^\$(\w+)\s*=\s*"([^"]*)"(.*)$') {
+                $varName = $Matches[1]; $strVal = $Matches[2]; $mods = $Matches[3].Trim()
+                $ruleStrings[$varName] = @{ Type = 'text'; Value = $strVal; Modifiers = $mods }
+            }
+            # Hex string: $var = { hex bytes }
+            elseif ($trimmed -match '^\$(\w+)\s*=\s*\{([^}]*)\}') {
+                $varName = $Matches[1]; $hexVal = $Matches[2].Trim()
+                $ruleStrings[$varName] = @{ Type = 'hex'; Value = $hexVal; Modifiers = '' }
+            }
+            # Regex string: $var = /regex/
+            elseif ($trimmed -match '^\$(\w+)\s*=\s*/(.+)/([a-zA-Z]*)$') {
+                $varName = $Matches[1]; $regVal = $Matches[2]; $mods = $Matches[3]
+                $ruleStrings[$varName] = @{ Type = 'regex'; Value = $regVal; Modifiers = $mods }
+            }
+        }
+
+        if ($inCondition) {
+            $conditionText += " $trimmed"
+        }
+    }
+
+    # Handle case where rule didn't close with }
+    if ($inRule -and $ruleName) {
+        $kql = Build-YaraKql -RuleName $ruleName -Strings $ruleStrings -Condition $conditionText -Meta $metaInfo -TargetTable $TargetTable -TimeRange $TimeRange
+        [void]$sb.Append($kql)
+    }
+
+    return $sb.ToString()
+}
+
+function Build-YaraKql {
+    param(
+        [string]$RuleName,
+        [hashtable]$Strings,
+        [string]$Condition,
+        [hashtable]$Meta,
+        [string]$TargetTable,
+        [string]$TimeRange
+    )
+
+    $sb = New-Object System.Text.StringBuilder
+
+    $author = if ($Meta.author) { $Meta.author } else { 'unknown' }
+    $desc = if ($Meta.description) { $Meta.description } else { '' }
+
+    [void]$sb.AppendLine("// ================================================================")
+    [void]$sb.AppendLine("// YARA Rule: $RuleName (Author: $author)")
+    if ($desc) { [void]$sb.AppendLine("// $desc") }
+    [void]$sb.AppendLine("// NOTE: YARA is file-scan oriented. This KQL approximation")
+    [void]$sb.AppendLine("//   searches process/file telemetry for string indicators.")
+    [void]$sb.AppendLine("//   Hex byte patterns require raw file content access.")
+    [void]$sb.AppendLine("// ================================================================")
+
+    [void]$sb.AppendLine("$TargetTable")
+    [void]$sb.AppendLine("| where TimeGenerated > ago($TimeRange)")
+
+    # Determine search columns based on target table
+    $searchCols = switch ($TargetTable) {
+        'DeviceFileEvents'    { @('FileName','FolderPath','InitiatingProcessCommandLine','InitiatingProcessFileName') }
+        'DeviceProcessEvents' { @('ProcessCommandLine','FileName','FolderPath','InitiatingProcessCommandLine') }
+        'DeviceEvents'        { @('FileName','FolderPath','ProcessCommandLine','InitiatingProcessCommandLine') }
+        default               { @('FileName','FolderPath') }
+    }
+
+    # Build let statements for each string variable
+    $varKqlMap = @{}
+    foreach ($varName in $Strings.Keys) {
+        $s = $Strings[$varName]
+        switch ($s.Type) {
+            'text' {
+                $nocase = ($s.Modifiers -match 'nocase')
+                $op = if ($nocase) { 'contains' } else { 'contains_cs' }
+                $conds = $searchCols | ForEach-Object { "$_ $op `"$($s.Value)`"" }
+                $varKqlMap[$varName] = "(" + ($conds -join " or ") + ")"
+            }
+            'hex' {
+                # Hex patterns cannot be directly searched in KQL telemetry
+                # Generate a comment with the hex value for reference
+                $varKqlMap[$varName] = "true // YARA hex pattern: { $($s.Value) } - requires raw content inspection"
+            }
+            'regex' {
+                $conds = $searchCols | ForEach-Object { "$_ matches regex @`"$($s.Value)`"" }
+                $varKqlMap[$varName] = "(" + ($conds -join " or ") + ")"
+            }
+        }
+    }
+
+    # Parse condition
+    $cond = $Condition.Trim()
+
+    if ($cond -match 'any\s+of\s+them' -or $cond -match 'any\s+of\s+\(\$\*\)') {
+        $allExprs = $varKqlMap.Values | Where-Object { $_ -ne '' }
+        if ($allExprs.Count -gt 0) {
+            [void]$sb.AppendLine("| where " + ($allExprs -join "`r`n    or "))
+        }
+    } elseif ($cond -match 'all\s+of\s+them' -or $cond -match 'all\s+of\s+\(\$\*\)') {
+        $allExprs = $varKqlMap.Values | Where-Object { $_ -ne '' }
+        if ($allExprs.Count -gt 0) {
+            [void]$sb.AppendLine("| where " + ($allExprs -join "`r`n    and "))
+        }
+    } elseif ($cond -match '(\d+)\s+of\s+them') {
+        $threshold = [int]$Matches[1]
+        $allExprs = $varKqlMap.Values | Where-Object { $_ -ne '' }
+        [void]$sb.AppendLine("// Condition: $threshold of them")
+        [void]$sb.AppendLine("| extend _matchCount = toint(" + (($allExprs | ForEach-Object { "iif($_, 1, 0)" }) -join " + ") + ")")
+        [void]$sb.AppendLine("| where _matchCount >= $threshold")
+    } else {
+        # Direct variable references: $s1 and $s2 or $s3
+        $kqlCond = $cond
+        foreach ($varName in $varKqlMap.Keys) {
+            $kqlCond = $kqlCond -replace "\`$$varName\b", $varKqlMap[$varName]
+        }
+        $kqlCond = $kqlCond -replace '\band\b', 'and' -replace '\bor\b', 'or' -replace '\bnot\b', 'not'
+        [void]$sb.AppendLine("| where $kqlCond")
+    }
+
+    # Default projection
+    $tableDef = $script:TableDefinitions[$TargetTable]
+    if ($tableDef -and $tableDef.DefaultColumns.Count -gt 0) {
+        [void]$sb.AppendLine("| project " + ($tableDef.DefaultColumns -join ', '))
+    }
+
+    return $sb.ToString()
+}

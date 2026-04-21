@@ -1,0 +1,286 @@
+<#
+.SYNOPSIS
+    KQL datatable() statement builder with CSV/TXT import and let variable support.
+.NOTES
+    Generates valid datatable() blocks with proper KQL type literals.
+    Supports manual entry, CSV import, and line-delimited text file import.
+#>
+
+function Build-KqlDatatable {
+    <#
+    .SYNOPSIS
+        Builds a KQL datatable() statement from column definitions and row data.
+    .PARAMETER TableVarName
+        The let variable name for the datatable.
+    .PARAMETER Columns
+        Array of @{ Name='col'; Type='string' } hashtables.
+    .PARAMETER Rows
+        Array of arrays, each inner array = one row of values.
+    .PARAMETER AdditionalLets
+        Optional hashtable of extra let variable definitions.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$TableVarName = 'customTable',
+        [Parameter(Mandatory)]
+        [array]$Columns,
+        [Parameter(Mandatory)]
+        [array]$Rows,
+        [hashtable]$AdditionalLets = @{}
+    )
+
+    $sb = New-Object System.Text.StringBuilder
+
+    # Additional let statements
+    foreach ($letName in ($AdditionalLets.Keys | Sort-Object)) {
+        $letVal = $AdditionalLets[$letName]
+        [void]$sb.AppendLine("let $letName = $letVal;")
+    }
+    if ($AdditionalLets.Count -gt 0) { [void]$sb.AppendLine("") }
+
+    # Column definitions
+    $colDefs = @()
+    foreach ($col in $Columns) {
+        $colDefs += "$($col.Name):$($col.Type)"
+    }
+
+    [void]$sb.AppendLine("let $TableVarName = datatable($($colDefs -join ', ')) [")
+
+    # Rows
+    for ($r = 0; $r -lt $Rows.Count; $r++) {
+        $row = $Rows[$r]
+        $vals = @()
+        for ($c = 0; $c -lt [Math]::Min($row.Count, $Columns.Count); $c++) {
+            $val = $row[$c]
+            $colType = $Columns[$c].Type
+            $vals += Format-KqlValue -Value $val -KqlType $colType
+        }
+        # Pad if row is shorter than column count
+        while ($vals.Count -lt $Columns.Count) {
+            $colType = $Columns[$vals.Count].Type
+            $vals += Get-KqlDefault -KqlType $colType
+        }
+
+        $trailing = if ($r -lt $Rows.Count - 1) { ',' } else { '' }
+        [void]$sb.AppendLine("    $($vals -join ', ')$trailing")
+    }
+
+    [void]$sb.AppendLine("];")
+    [void]$sb.AppendLine("$TableVarName")
+
+    return $sb.ToString()
+}
+
+function Format-KqlValue {
+    param(
+        [string]$Value,
+        [string]$KqlType
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value) -or $Value -eq 'null' -or $Value -eq '') {
+        return Get-KqlDefault -KqlType $KqlType
+    }
+
+    switch ($KqlType) {
+        'string'   { return "`"$($Value -replace '"', '\"')`"" }
+        'int'      {
+            if ($Value -match '^\-?\d+$') { return $Value }
+            return "int(null)"
+        }
+        'long'     {
+            if ($Value -match '^\-?\d+$') { return "long($Value)" }
+            return "long(null)"
+        }
+        'real'     {
+            if ($Value -match '^\-?\d+\.?\d*$') { return "real($Value)" }
+            return "real(null)"
+        }
+        'datetime' {
+            # Accept ISO 8601 and common formats
+            if ($Value -match '^\d{4}-\d{2}-\d{2}') {
+                return "datetime($Value)"
+            }
+            if ($Value -match '^\d{1,2}/\d{1,2}/\d{4}') {
+                try {
+                    $dt = [datetime]::Parse($Value)
+                    return "datetime($($dt.ToString('yyyy-MM-ddTHH:mm:ss')))"
+                } catch {
+                    return "datetime(null)"
+                }
+            }
+            return "datetime(null)"
+        }
+        'bool'     {
+            if ($Value -in @('true','1','yes','True','TRUE'))  { return 'true' }
+            if ($Value -in @('false','0','no','False','FALSE')) { return 'false' }
+            return 'false'
+        }
+        'dynamic'  {
+            # If it looks like JSON, pass through; otherwise wrap as string
+            if ($Value -match '^\s*[\{\[]') { return "dynamic($Value)" }
+            return "dynamic(`"$($Value -replace '"', '\"')`")"
+        }
+        'timespan' {
+            return "timespan($Value)"
+        }
+        'guid' {
+            return "guid($Value)"
+        }
+        'decimal' {
+            if ($Value -match '^\-?\d+\.?\d*$') { return "decimal($Value)" }
+            return "decimal(null)"
+        }
+        default { return "`"$($Value -replace '"', '\"')`"" }
+    }
+}
+
+function Get-KqlDefault {
+    param([string]$KqlType)
+    switch ($KqlType) {
+        'string'   { return '""' }
+        'int'      { return 'int(null)' }
+        'long'     { return 'long(null)' }
+        'real'     { return 'real(null)' }
+        'datetime' { return 'datetime(null)' }
+        'bool'     { return 'false' }
+        'dynamic'  { return 'dynamic(null)' }
+        'timespan' { return 'timespan(null)' }
+        'guid'     { return 'guid(null)' }
+        'decimal'  { return 'decimal(null)' }
+        default    { return '""' }
+    }
+}
+
+function Import-CsvForDatatable {
+    <#
+    .SYNOPSIS
+        Parses CSV text (with header row) into column definitions and row data.
+        Returns @{ Columns = @(...); Rows = @(...) }
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$CsvText,
+        [string]$Delimiter = ','
+    )
+
+    $lines = $CsvText -split "\r?\n" | Where-Object { $_.Trim() -ne '' }
+    if ($lines.Count -lt 1) { return @{ Columns = @(); Rows = @() } }
+
+    # Parse header
+    $headerLine = $lines[0]
+    $headers = Parse-CsvLine -Line $headerLine -Delimiter $Delimiter
+    $columns = @()
+    foreach ($h in $headers) {
+        $clean = $h.Trim().Trim('"').Trim("'")
+        # Check if header has type annotation: "ColName:type"
+        if ($clean -match '^(.+):(\w+)$') {
+            $columns += @{ Name = $Matches[1].Trim(); Type = $Matches[2].Trim() }
+        } else {
+            $columns += @{ Name = $clean; Type = 'string' }
+        }
+    }
+
+    # Parse rows
+    $rows = @()
+    for ($i = 1; $i -lt $lines.Count; $i++) {
+        $rowVals = Parse-CsvLine -Line $lines[$i] -Delimiter $Delimiter
+        $rows += ,@($rowVals | ForEach-Object { $_.Trim().Trim('"').Trim("'") })
+    }
+
+    # Auto-detect types if all columns are 'string'
+    if (($columns | Where-Object { $_.Type -ne 'string' }).Count -eq 0 -and $rows.Count -gt 0) {
+        for ($c = 0; $c -lt $columns.Count; $c++) {
+            $sampleVals = @()
+            foreach ($row in $rows) {
+                if ($c -lt $row.Count -and $row[$c] -ne '') { $sampleVals += $row[$c] }
+            }
+            if ($sampleVals.Count -eq 0) { continue }
+            $columns[$c].Type = Detect-KqlType -Values $sampleVals
+        }
+    }
+
+    return @{ Columns = $columns; Rows = $rows }
+}
+
+function Import-TxtForDatatable {
+    <#
+    .SYNOPSIS
+        Parses a line-delimited text file into a single-column datatable.
+        Each non-empty line becomes one row.
+    .PARAMETER TxtText
+        The raw text content.
+    .PARAMETER ColumnName
+        Name for the single column.
+    .PARAMETER ColumnType
+        KQL type for the column.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$TxtText,
+        [string]$ColumnName = 'Value',
+        [string]$ColumnType = 'string'
+    )
+
+    $lines = $TxtText -split "\r?\n" | Where-Object { $_.Trim() -ne '' }
+    $columns = @(@{ Name = $ColumnName; Type = $ColumnType })
+    $rows = @()
+    foreach ($line in $lines) {
+        $rows += ,@($line.Trim())
+    }
+
+    # Auto-detect type if string
+    if ($ColumnType -eq 'string' -and $rows.Count -gt 0) {
+        $sampleVals = $rows | ForEach-Object { $_[0] } | Where-Object { $_ -ne '' }
+        $detected = Detect-KqlType -Values $sampleVals
+        $columns[0].Type = $detected
+    }
+
+    return @{ Columns = $columns; Rows = $rows }
+}
+
+function Parse-CsvLine {
+    param([string]$Line, [string]$Delimiter = ',')
+
+    # Handle quoted fields with embedded delimiters
+    $fields = [System.Collections.Generic.List[string]]::new()
+    $inQuotes = $false
+    $current = New-Object System.Text.StringBuilder
+
+    for ($i = 0; $i -lt $Line.Length; $i++) {
+        $ch = $Line[$i]
+        if ($ch -eq '"') {
+            $inQuotes = -not $inQuotes
+            [void]$current.Append($ch)
+        } elseif ($ch -eq $Delimiter[0] -and -not $inQuotes) {
+            $fields.Add($current.ToString())
+            $current = New-Object System.Text.StringBuilder
+        } else {
+            [void]$current.Append($ch)
+        }
+    }
+    $fields.Add($current.ToString())
+
+    return $fields.ToArray()
+}
+
+function Detect-KqlType {
+    param([string[]]$Values)
+
+    $allInt = $true; $allReal = $true; $allDatetime = $true; $allBool = $true
+
+    foreach ($v in $Values) {
+        if ($v -eq '' -or $v -eq 'null') { continue }
+        if ($v -notmatch '^\-?\d+$') { $allInt = $false }
+        if ($v -notmatch '^\-?\d+\.?\d*$') { $allReal = $false }
+        if ($v -notmatch '^\d{4}-\d{2}-\d{2}' -and $v -notmatch '^\d{1,2}/\d{1,2}/\d{2,4}') { $allDatetime = $false }
+        if ($v -notin @('true','false','True','False','1','0','yes','no')) { $allBool = $false }
+    }
+
+    if ($allBool -and $Values.Count -gt 0) { return 'bool' }
+    if ($allInt -and $Values.Count -gt 0)  { return 'int' }
+    if ($allReal -and $Values.Count -gt 0) { return 'real' }
+    if ($allDatetime -and $Values.Count -gt 0) { return 'datetime' }
+    return 'string'
+}

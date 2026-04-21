@@ -1,0 +1,151 @@
+<#
+.SYNOPSIS
+    Self-contained YAML parser for Sigma rule ingestion.
+    No external modules required (powershell-yaml not needed).
+.NOTES
+    Handles the subset of YAML used by Sigma rules:
+    - Scalar key:value pairs
+    - Nested mappings (indentation-based)
+    - Sequences (- item)
+    - Pipe-modified keys (field|contains, field|endswith, etc.)
+    - Multi-line strings (not block scalars, but common patterns)
+#>
+
+function ConvertFrom-SimpleYaml {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$YamlText
+    )
+
+    $lines = $YamlText -split "\r?\n"
+    $root = [ordered]@{}
+    $stack = [System.Collections.Generic.List[object]]::new()
+    $stack.Add(@{ Obj = $root; Indent = -1 })
+
+    $i = 0
+    while ($i -lt $lines.Count) {
+        $line = $lines[$i]
+        $i++
+
+        # Skip blanks and comments
+        if ($line -match '^\s*$' -or $line -match '^\s*#') { continue }
+
+        # Measure indentation
+        $trimmed = $line.TrimStart()
+        $indent = $line.Length - $trimmed.Length
+
+        # Pop stack to correct parent level
+        while ($stack.Count -gt 1 -and $stack[$stack.Count - 1].Indent -ge $indent) {
+            $stack.RemoveAt($stack.Count - 1)
+        }
+        $parent = $stack[$stack.Count - 1].Obj
+
+        # Sequence item: "- value" or "- key: value"
+        if ($trimmed -match '^-\s+(.*)$') {
+            $itemText = $Matches[1].Trim()
+
+            # Ensure parent context has a list
+            if ($parent -is [System.Collections.IDictionary]) {
+                # This means the list is nested under the last key added
+                # We need to find the last key and convert its value to a list
+                $lastKey = $null
+                foreach ($k in $parent.Keys) { $lastKey = $k }
+                if ($null -ne $lastKey -and ($null -eq $parent[$lastKey] -or $parent[$lastKey] -eq '')) {
+                    $parent[$lastKey] = [System.Collections.Generic.List[object]]::new()
+                }
+                if ($null -ne $lastKey -and $parent[$lastKey] -is [System.Collections.Generic.List[object]]) {
+                    $targetList = $parent[$lastKey]
+                } else {
+                    # Fallback: treat as list under __items
+                    if (-not $parent.Contains('__items')) {
+                        $parent['__items'] = [System.Collections.Generic.List[object]]::new()
+                    }
+                    $targetList = $parent['__items']
+                }
+            } elseif ($parent -is [System.Collections.Generic.List[object]]) {
+                $targetList = $parent
+            } else {
+                $i++; continue
+            }
+
+            if ($itemText -match '^([^:]+):\s+(.+)$') {
+                # Inline mapping in list: "- key: value"
+                $mapItem = [ordered]@{}
+                $mapItem[$Matches[1].Trim()] = Parse-YamlValue $Matches[2].Trim()
+                $targetList.Add($mapItem)
+                $stack.Add(@{ Obj = $mapItem; Indent = $indent + 2 })
+            } else {
+                $targetList.Add((Parse-YamlValue $itemText))
+            }
+            continue
+        }
+
+        # Key: value pair
+        if ($trimmed -match '^([^:]+?):\s*(.*)$') {
+            $key = $Matches[1].Trim()
+            $val = $Matches[2].Trim()
+
+            if ($parent -isnot [System.Collections.IDictionary]) { continue }
+
+            if ($val -eq '' -or $val -eq '|' -or $val -eq '>') {
+                # Nested mapping or block scalar will follow
+                if ($val -eq '|' -or $val -eq '>') {
+                    # Collect block scalar lines
+                    $blockLines = [System.Collections.Generic.List[string]]::new()
+                    $blockIndent = -1
+                    while ($i -lt $lines.Count) {
+                        $nextLine = $lines[$i]
+                        if ($nextLine -match '^\s*$') { $blockLines.Add(''); $i++; continue }
+                        $nextTrimmed = $nextLine.TrimStart()
+                        $nextIndent = $nextLine.Length - $nextTrimmed.Length
+                        if ($blockIndent -eq -1) { $blockIndent = $nextIndent }
+                        if ($nextIndent -lt $blockIndent) { break }
+                        $blockLines.Add($nextTrimmed)
+                        $i++
+                    }
+                    $joinChar = if ($val -eq '|') { "`n" } else { ' ' }
+                    $parent[$key] = ($blockLines -join $joinChar).TrimEnd()
+                } else {
+                    $child = [ordered]@{}
+                    $parent[$key] = $child
+                    $stack.Add(@{ Obj = $child; Indent = $indent })
+                }
+            } else {
+                $parent[$key] = Parse-YamlValue $val
+            }
+            continue
+        }
+    }
+
+    return $root
+}
+
+function Parse-YamlValue {
+    param([string]$Raw)
+
+    if ($Raw -eq 'true') { return $true }
+    if ($Raw -eq 'false') { return $false }
+    if ($Raw -eq 'null' -or $Raw -eq '~') { return $null }
+
+    # Quoted string
+    if (($Raw.StartsWith('"') -and $Raw.EndsWith('"')) -or
+        ($Raw.StartsWith("'") -and $Raw.EndsWith("'"))) {
+        return $Raw.Substring(1, $Raw.Length - 2)
+    }
+
+    # Inline list [a, b, c]
+    if ($Raw.StartsWith('[') -and $Raw.EndsWith(']')) {
+        $inner = $Raw.Substring(1, $Raw.Length - 2)
+        $items = [System.Collections.Generic.List[object]]::new()
+        foreach ($part in ($inner -split ',')) {
+            $items.Add((Parse-YamlValue $part.Trim()))
+        }
+        return $items
+    }
+
+    # Integer
+    if ($Raw -match '^\d+$') { return [int]$Raw }
+
+    return $Raw
+}

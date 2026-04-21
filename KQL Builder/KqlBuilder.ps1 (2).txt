@@ -1,0 +1,956 @@
+<#
+.SYNOPSIS
+    KQL Query Builder & Rule Converter Suite
+    Dark Mode Incident Response Edition
+
+.DESCRIPTION
+    Tab 1: Interactive KQL builder with full Sentinel/MDE schema coverage,
+           type-aware validation, and structured column parsing.
+    Tab 2: Snort-to-KQL L7/network rule converter.
+    Tab 3: Sigma-to-KQL detection rule converter (built-in YAML parser).
+    Tab 4: YARA-to-KQL indicator converter.
+    Tab 5: Datatable creator with CSV/TXT import and let variable support.
+
+    All tabs support saving to Access DB or JSON fallback.
+
+    UI Aesthetic: GitHub Dark (#0d1117 bg, #161b22 surface, #58a6ff blue accents,
+    #f85149 critical accents, monospace output, Segoe UI controls).
+
+.PARAMETER ResetDb
+    Wipe saved queries and re-initialize storage.
+
+.EXAMPLE
+    .\KqlBuilder.ps1
+    .\KqlBuilder.ps1 -ResetDb
+#>
+
+[CmdletBinding()]
+param([switch]$ResetDb)
+$ErrorActionPreference = 'Stop'
+
+# ================================================================
+# DOT-SOURCE HELPER MODULES
+# ================================================================
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+. (Join-Path $scriptDir 'KqlBuilder-YamlParser.ps1')
+. (Join-Path $scriptDir 'KqlBuilder-Storage.ps1')
+. (Join-Path $scriptDir 'KqlBuilder-Schemas.ps1')
+. (Join-Path $scriptDir 'KqlBuilder-Engine.ps1')
+. (Join-Path $scriptDir 'KqlBuilder-Converters.ps1')
+. (Join-Path $scriptDir 'KqlBuilder-Datatable.ps1')
+
+# ================================================================
+# INITIALIZE DATA LAYER
+# ================================================================
+Initialize-Storage -Reset:$ResetDb
+Initialize-TableSchemas
+
+# ================================================================
+# WINFORMS SETUP
+# ================================================================
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class DarkModeHelper {
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+    public static extern int SetWindowTheme(IntPtr hWnd, string pszSubAppName, string pszSubIdList);
+}
+"@ -ErrorAction SilentlyContinue
+
+# ================================================================
+# COLOR PALETTE
+# ================================================================
+$c_bg       = [System.Drawing.ColorTranslator]::FromHtml("#0d1117")
+$c_surface  = [System.Drawing.ColorTranslator]::FromHtml("#161b22")
+$c_elevated = [System.Drawing.ColorTranslator]::FromHtml("#21262d")
+$c_border   = [System.Drawing.ColorTranslator]::FromHtml("#30363d")
+$c_textMain = [System.Drawing.ColorTranslator]::FromHtml("#e6edf3")
+$c_textMuted= [System.Drawing.ColorTranslator]::FromHtml("#8b949e")
+$c_blue     = [System.Drawing.ColorTranslator]::FromHtml("#58a6ff")
+$c_red      = [System.Drawing.ColorTranslator]::FromHtml("#f85149")
+$c_green    = [System.Drawing.ColorTranslator]::FromHtml("#3fb950")
+$c_orange   = [System.Drawing.ColorTranslator]::FromHtml("#d29922")
+$c_purple   = [System.Drawing.ColorTranslator]::FromHtml("#bc8cff")
+
+$fontUI       = New-Object System.Drawing.Font('Segoe UI', 9)
+$fontUIBold   = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+$fontMono     = New-Object System.Drawing.Font('Consolas', 10)
+$fontMonoSm   = New-Object System.Drawing.Font('Consolas', 9)
+$fontHeader   = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+
+# ================================================================
+# THEMING ENGINE
+# ================================================================
+function Apply-Theme($ctrl) {
+    $ctrl.BackColor = $c_surface
+    $ctrl.ForeColor = $c_textMain
+    $ctrl.Font = $fontUI
+
+    if ($ctrl -is [System.Windows.Forms.TextBox]) {
+        $ctrl.BackColor = $c_bg
+        $ctrl.ForeColor = $c_textMain
+        try { [DarkModeHelper]::SetWindowTheme($ctrl.Handle, "DarkMode_Explorer", $null) | Out-Null } catch {}
+    }
+    elseif ($ctrl -is [System.Windows.Forms.ComboBox]) {
+        $ctrl.BackColor = $c_bg
+        $ctrl.ForeColor = $c_textMain
+        $ctrl.FlatStyle = 'Flat'
+        $ctrl.DrawMode = [System.Windows.Forms.DrawMode]::OwnerDrawFixed
+        $ctrl.Add_DrawItem({
+            param($s, $e)
+            if ($e.Index -lt 0) { return }
+            $g = $e.Graphics
+            $bgB = if ($e.State -band [System.Windows.Forms.DrawItemState]::Selected) {
+                New-Object System.Drawing.SolidBrush($c_elevated)
+            } else { New-Object System.Drawing.SolidBrush($c_bg) }
+            $g.FillRectangle($bgB, $e.Bounds)
+            $g.DrawString($s.Items[$e.Index].ToString(), $fontUI, (New-Object System.Drawing.SolidBrush($c_textMain)), ($e.Bounds.X + 2), ($e.Bounds.Y + 2))
+        })
+        try { [DarkModeHelper]::SetWindowTheme($ctrl.Handle, "DarkMode_Explorer", $null) | Out-Null } catch {}
+    }
+    elseif ($ctrl -is [System.Windows.Forms.NumericUpDown]) {
+        $ctrl.BackColor = $c_bg
+        $ctrl.ForeColor = $c_textMain
+    }
+    elseif ($ctrl -is [System.Windows.Forms.Button]) {
+        $ctrl.FlatStyle = 'Flat'
+        $ctrl.FlatAppearance.BorderColor = $c_border
+        $ctrl.FlatAppearance.BorderSize = 1
+        $ctrl.BackColor = $c_elevated
+        $ctrl.ForeColor = $c_blue
+        $ctrl.Cursor = [System.Windows.Forms.Cursors]::Hand
+    }
+    elseif ($ctrl -is [System.Windows.Forms.CheckedListBox]) {
+        $ctrl.BackColor = $c_bg
+        $ctrl.ForeColor = $c_textMain
+        $ctrl.BorderStyle = 'FixedSingle'
+    }
+    elseif ($ctrl -is [System.Windows.Forms.CheckBox]) {
+        $ctrl.ForeColor = $c_textMain
+    }
+    elseif ($ctrl -is [System.Windows.Forms.RadioButton]) {
+        $ctrl.ForeColor = $c_textMain
+    }
+    elseif ($ctrl -is [System.Windows.Forms.DataGridView]) {
+        $ctrl.BackgroundColor = $c_bg
+        $ctrl.GridColor = $c_border
+        $ctrl.DefaultCellStyle.BackColor = $c_bg
+        $ctrl.DefaultCellStyle.ForeColor = $c_textMain
+        $ctrl.DefaultCellStyle.SelectionBackColor = $c_elevated
+        $ctrl.DefaultCellStyle.SelectionForeColor = $c_blue
+        $ctrl.ColumnHeadersDefaultCellStyle.BackColor = $c_surface
+        $ctrl.ColumnHeadersDefaultCellStyle.ForeColor = $c_textMain
+        $ctrl.EnableHeadersVisualStyles = $false
+        $ctrl.RowHeadersDefaultCellStyle.BackColor = $c_surface
+        $ctrl.RowHeadersDefaultCellStyle.ForeColor = $c_textMain
+    }
+    elseif ($ctrl -is [System.Windows.Forms.Panel] -or $ctrl -is [System.Windows.Forms.TabPage] -or $ctrl -is [System.Windows.Forms.SplitContainer]) {
+        try { [DarkModeHelper]::SetWindowTheme($ctrl.Handle, "DarkMode_Explorer", $null) | Out-Null } catch {}
+    }
+
+    foreach ($child in $ctrl.Controls) { Apply-Theme $child }
+}
+
+# ================================================================
+# UTILITY FUNCTIONS
+# ================================================================
+function New-StyledButton {
+    param([string]$Text, [System.Drawing.Color]$Color = $c_blue, [int]$Width = 120, [int]$Height = 32)
+    $btn = New-Object System.Windows.Forms.Button
+    $btn.Text = $Text; $btn.Width = $Width; $btn.Height = $Height
+    $btn.FlatStyle = 'Flat'; $btn.FlatAppearance.BorderColor = $c_border
+    $btn.BackColor = $c_elevated; $btn.ForeColor = $Color
+    $btn.Font = $fontUIBold; $btn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    return $btn
+}
+
+function New-MonoTextBox {
+    param([string]$Dock = 'Fill')
+    $tb = New-Object System.Windows.Forms.TextBox
+    $tb.Multiline = $true; $tb.ScrollBars = 'Both'; $tb.WordWrap = $false
+    $tb.Font = $fontMono; $tb.BorderStyle = 'None'
+    $tb.BackColor = $c_bg; $tb.ForeColor = $c_textMain
+    if ($Dock) { $tb.Dock = $Dock }
+    return $tb
+}
+
+function Show-Status {
+    param([System.Windows.Forms.Label]$Label, [string]$Text, [System.Drawing.Color]$Color = $c_green)
+    $Label.Text = $Text
+    $Label.ForeColor = $Color
+}
+
+# ================================================================
+# MAIN FORM
+# ================================================================
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "KQL Builder Suite - Incident Response Toolkit"
+$form.Size = New-Object System.Drawing.Size(1400, 1000)
+$form.StartPosition = 'CenterScreen'
+$form.BackColor = $c_bg
+
+# Status bar at bottom
+$statusBar = New-Object System.Windows.Forms.Panel
+$statusBar.Dock = 'Bottom'; $statusBar.Height = 28; $statusBar.BackColor = $c_surface
+$lblStatus = New-Object System.Windows.Forms.Label
+$lblStatus.Dock = 'Fill'; $lblStatus.ForeColor = $c_textMuted; $lblStatus.Font = $fontMonoSm
+$lblStatus.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+$lblStatus.Text = " Storage: $($script:StorageMode.ToUpper()) | Tables: $($script:TableDefinitions.Count) | Ready"
+$statusBar.Controls.Add($lblStatus)
+$form.Controls.Add($statusBar)
+
+# ================================================================
+# TAB CONTROL (Custom Drawn)
+# ================================================================
+$tabControl = New-Object System.Windows.Forms.TabControl
+$tabControl.Dock = 'Fill'
+$tabControl.DrawMode = [System.Windows.Forms.TabDrawMode]::OwnerDrawFixed
+$tabControl.ItemSize = New-Object System.Drawing.Size(150, 32)
+$tabControl.SizeMode = 'Fixed'
+$tabControl.Padding = New-Object System.Drawing.Point(12, 4)
+$tabControl.Add_DrawItem({
+    param($sender, $e)
+    $g = $e.Graphics
+    $g.FillRectangle((New-Object System.Drawing.SolidBrush($c_surface)), $e.Bounds)
+    $isSelected = ($e.State -eq [System.Windows.Forms.DrawItemState]::Selected)
+    $textColor = if ($isSelected) { $c_blue } else { $c_textMuted }
+    $g.DrawString($sender.TabPages[$e.Index].Text, $fontUIBold, (New-Object System.Drawing.SolidBrush($textColor)), ($e.Bounds.X + 12), ($e.Bounds.Y + 8))
+    if ($isSelected) {
+        $pen = New-Object System.Drawing.Pen($c_blue, 3)
+        $g.DrawLine($pen, $e.Bounds.X, ($e.Bounds.Bottom - 1), $e.Bounds.Right, ($e.Bounds.Bottom - 1))
+    }
+})
+$form.Controls.Add($tabControl)
+
+# Create tab pages
+$tabBuilder   = New-Object System.Windows.Forms.TabPage; $tabBuilder.Text   = "Query Builder"
+$tabSnort     = New-Object System.Windows.Forms.TabPage; $tabSnort.Text     = "Snort to KQL"
+$tabSigma     = New-Object System.Windows.Forms.TabPage; $tabSigma.Text     = "Sigma to KQL"
+$tabYara      = New-Object System.Windows.Forms.TabPage; $tabYara.Text      = "YARA to KQL"
+$tabDatatable = New-Object System.Windows.Forms.TabPage; $tabDatatable.Text = "Datatable"
+$tabControl.TabPages.AddRange(@($tabBuilder, $tabSnort, $tabSigma, $tabYara, $tabDatatable))
+
+# ================================================================
+# TAB 1: QUERY BUILDER
+# ================================================================
+$split1 = New-Object System.Windows.Forms.SplitContainer
+$split1.Dock = 'Fill'; $split1.Orientation = 'Vertical'; $split1.SplitterDistance = 620
+$split1.SplitterWidth = 4; $split1.BackColor = $c_border
+$tabBuilder.Controls.Add($split1)
+
+$inputPanel = New-Object System.Windows.Forms.Panel
+$inputPanel.Dock = 'Fill'; $inputPanel.AutoScroll = $true; $inputPanel.BackColor = $c_surface
+$split1.Panel1.Controls.Add($inputPanel)
+
+$outPanel = New-Object System.Windows.Forms.Panel
+$outPanel.Dock = 'Fill'; $outPanel.BackColor = $c_bg
+$split1.Panel2.Controls.Add($outPanel)
+
+# Build input panel controls
+$script:y = 10
+
+function Add-SectionHeader([string]$Text, [System.Drawing.Color]$Color = $c_blue) {
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = $Text; $lbl.Font = $fontHeader; $lbl.ForeColor = $Color
+    $lbl.Location = New-Object System.Drawing.Point(10, $script:y); $lbl.AutoSize = $true
+    $inputPanel.Controls.Add($lbl); $script:y += 26
+}
+
+function Add-InputField([string]$Label, [System.Windows.Forms.Control]$Ctrl, [int]$LabelWidth = 140) {
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = $Label; $lbl.Location = New-Object System.Drawing.Point(15, ($script:y + 3))
+    $lbl.AutoSize = $true; $lbl.ForeColor = $c_textMain; $lbl.Font = $fontUI
+    $inputPanel.Controls.Add($lbl)
+    $Ctrl.Location = New-Object System.Drawing.Point(($LabelWidth + 20), $script:y)
+    $Ctrl.Width = 400
+    if ($Ctrl -is [System.Windows.Forms.TextBox]) { $Ctrl.BorderStyle = 'FixedSingle'; $Ctrl.BackColor = $c_bg; $Ctrl.ForeColor = $c_textMain }
+    $inputPanel.Controls.Add($Ctrl); $script:y += 28
+}
+
+# -- Metadata section --
+Add-SectionHeader "Metadata & Target"
+$txtName = New-Object System.Windows.Forms.TextBox; Add-InputField "Query Name:" $txtName
+$txtTags = New-Object System.Windows.Forms.TextBox; Add-InputField "Tags:" $txtTags
+
+$cmbTable = New-Object System.Windows.Forms.ComboBox; $cmbTable.DropDownStyle = 'DropDownList'
+foreach ($t in ($script:TableDefinitions.Keys | Sort-Object)) { [void]$cmbTable.Items.Add($t) }
+Add-InputField "Table:" $cmbTable
+
+# -- Standard Filters --
+Add-SectionHeader "Standard Filters"
+$cmbTime = New-Object System.Windows.Forms.ComboBox; $cmbTime.DropDownStyle = 'DropDownList'
+@('1h','4h','12h','24h','3d','7d','14d','30d','90d','all') | ForEach-Object { [void]$cmbTime.Items.Add($_) }
+$cmbTime.SelectedItem = '24h'; Add-InputField "Time Range:" $cmbTime
+$txtComputer = New-Object System.Windows.Forms.TextBox; Add-InputField "Computer:" $txtComputer
+$txtUser = New-Object System.Windows.Forms.TextBox; Add-InputField "User Account:" $txtUser
+
+# -- Advanced Filters --
+Add-SectionHeader "Advanced Filters (Schema-Mapped)"
+$txtIp = New-Object System.Windows.Forms.TextBox; Add-InputField "IP Address:" $txtIp
+$txtProc = New-Object System.Windows.Forms.TextBox; Add-InputField "Process Name:" $txtProc
+$txtCmd = New-Object System.Windows.Forms.TextBox; Add-InputField "Command Line:" $txtCmd
+$txtHash = New-Object System.Windows.Forms.TextBox; Add-InputField "File Hash:" $txtHash
+
+# -- Table Specifics (dynamic) --
+Add-SectionHeader "Table-Specific Filters"
+$specPanel = New-Object System.Windows.Forms.Panel
+$specPanel.Location = New-Object System.Drawing.Point(15, $script:y)
+$specPanel.Size = New-Object System.Drawing.Size(545, 80); $specPanel.BackColor = $c_surface
+$inputPanel.Controls.Add($specPanel); $script:y += 85
+$script:SpecificsControls = @{}
+
+# -- Parse Options (dynamic) --
+Add-SectionHeader "Column Parsing" $c_purple
+$parsePanel = New-Object System.Windows.Forms.Panel
+$parsePanel.Location = New-Object System.Drawing.Point(15, $script:y)
+$parsePanel.Size = New-Object System.Drawing.Size(545, 60); $parsePanel.BackColor = $c_surface
+$inputPanel.Controls.Add($parsePanel); $script:y += 65
+$script:ParseCheckboxes = @{}
+
+# -- Output Config --
+Add-SectionHeader "Output Configuration"
+$lstCols = New-Object System.Windows.Forms.CheckedListBox
+$lstCols.Location = New-Object System.Drawing.Point(15, $script:y)
+$lstCols.Size = New-Object System.Drawing.Size(545, 120); $lstCols.CheckOnClick = $true
+$lstCols.BackColor = $c_bg; $lstCols.ForeColor = $c_textMain; $lstCols.BorderStyle = 'FixedSingle'
+$inputPanel.Controls.Add($lstCols); $script:y += 125
+
+$rdoDetailed = New-Object System.Windows.Forms.RadioButton
+$rdoDetailed.Text = "Detailed"; $rdoDetailed.Location = New-Object System.Drawing.Point(15, $script:y)
+$rdoDetailed.Checked = $true; $rdoDetailed.AutoSize = $true; $rdoDetailed.ForeColor = $c_textMain
+$inputPanel.Controls.Add($rdoDetailed)
+
+$rdoSummarized = New-Object System.Windows.Forms.RadioButton
+$rdoSummarized.Text = "Summarized"; $rdoSummarized.Location = New-Object System.Drawing.Point(110, $script:y)
+$rdoSummarized.AutoSize = $true; $rdoSummarized.ForeColor = $c_textMain
+$inputPanel.Controls.Add($rdoSummarized)
+
+$lblLimit = New-Object System.Windows.Forms.Label
+$lblLimit.Text = "Limit:"; $lblLimit.Location = New-Object System.Drawing.Point(390, ($script:y + 2))
+$lblLimit.AutoSize = $true; $lblLimit.ForeColor = $c_textMain
+$inputPanel.Controls.Add($lblLimit)
+
+$numLimit = New-Object System.Windows.Forms.NumericUpDown
+$numLimit.Location = New-Object System.Drawing.Point(435, $script:y)
+$numLimit.Minimum = 0; $numLimit.Maximum = 1000000; $numLimit.Value = 1000; $numLimit.Width = 110
+$numLimit.BackColor = $c_bg; $numLimit.ForeColor = $c_textMain; $numLimit.BorderStyle = 'FixedSingle'
+$inputPanel.Controls.Add($numLimit); $script:y += 40
+
+# -- Action Buttons --
+$btnBuild = New-StyledButton "Build Query" $c_green 130
+$btnBuild.Location = New-Object System.Drawing.Point(15, $script:y); $inputPanel.Controls.Add($btnBuild)
+
+$btnSave1 = New-StyledButton "Save" $c_blue 80
+$btnSave1.Location = New-Object System.Drawing.Point(155, $script:y); $inputPanel.Controls.Add($btnSave1)
+
+$btnCopy1 = New-StyledButton "Copy" $c_textMuted 80
+$btnCopy1.Location = New-Object System.Drawing.Point(245, $script:y); $inputPanel.Controls.Add($btnCopy1)
+
+$btnClear1 = New-StyledButton "Clear" $c_orange 80
+$btnClear1.Location = New-Object System.Drawing.Point(335, $script:y); $inputPanel.Controls.Add($btnClear1)
+
+# Output textbox
+$txtKql = New-MonoTextBox; $outPanel.Controls.Add($txtKql)
+
+# ================================================================
+# TAB 2: SNORT TO KQL
+# ================================================================
+$snortSplit = New-Object System.Windows.Forms.SplitContainer
+$snortSplit.Dock = 'Fill'; $snortSplit.Orientation = 'Horizontal'; $snortSplit.SplitterDistance = 350
+$tabSnort.Controls.Add($snortSplit)
+
+# Top: input
+$lblSnortIn = New-Object System.Windows.Forms.Label
+$lblSnortIn.Text = " Paste Snort Rules (one per line):"; $lblSnortIn.Dock = 'Top'; $lblSnortIn.Height = 28
+$lblSnortIn.ForeColor = $c_red; $lblSnortIn.Font = $fontHeader; $snortSplit.Panel1.Controls.Add($lblSnortIn)
+
+$txtSnortIn = New-MonoTextBox; $snortSplit.Panel1.Controls.Add($txtSnortIn); $txtSnortIn.BringToFront()
+
+# Mid: controls
+$pnlSnortCtrl = New-Object System.Windows.Forms.Panel
+$pnlSnortCtrl.Dock = 'Bottom'; $pnlSnortCtrl.Height = 48; $pnlSnortCtrl.BackColor = $c_elevated
+$snortSplit.Panel1.Controls.Add($pnlSnortCtrl)
+
+$btnConvertSnort = New-StyledButton "Convert to KQL" $c_green 160
+$btnConvertSnort.Location = New-Object System.Drawing.Point(15, 8); $pnlSnortCtrl.Controls.Add($btnConvertSnort)
+
+$lblSnortTarget = New-Object System.Windows.Forms.Label
+$lblSnortTarget.Text = "Target:"; $lblSnortTarget.Location = New-Object System.Drawing.Point(190, 14)
+$lblSnortTarget.AutoSize = $true; $lblSnortTarget.ForeColor = $c_textMuted; $pnlSnortCtrl.Controls.Add($lblSnortTarget)
+
+$cmbSnortTarget = New-Object System.Windows.Forms.ComboBox
+$cmbSnortTarget.DropDownStyle = 'DropDownList'; $cmbSnortTarget.Width = 180
+$cmbSnortTarget.Location = New-Object System.Drawing.Point(240, 10)
+@('CommonSecurityLog','W3CIISLog') | ForEach-Object { [void]$cmbSnortTarget.Items.Add($_) }
+$cmbSnortTarget.SelectedIndex = 0; $pnlSnortCtrl.Controls.Add($cmbSnortTarget)
+
+$btnSaveSnort = New-StyledButton "Save" $c_blue 80
+$btnSaveSnort.Location = New-Object System.Drawing.Point(440, 8); $pnlSnortCtrl.Controls.Add($btnSaveSnort)
+
+$btnCopySnort = New-StyledButton "Copy" $c_textMuted 80
+$btnCopySnort.Location = New-Object System.Drawing.Point(530, 8); $pnlSnortCtrl.Controls.Add($btnCopySnort)
+
+# Bottom: output
+$lblSnortOut = New-Object System.Windows.Forms.Label
+$lblSnortOut.Text = " Generated KQL:"; $lblSnortOut.Dock = 'Top'; $lblSnortOut.Height = 28
+$lblSnortOut.ForeColor = $c_blue; $lblSnortOut.Font = $fontHeader; $snortSplit.Panel2.Controls.Add($lblSnortOut)
+
+$txtSnortOut = New-MonoTextBox; $snortSplit.Panel2.Controls.Add($txtSnortOut); $txtSnortOut.BringToFront()
+
+# ================================================================
+# TAB 3: SIGMA TO KQL
+# ================================================================
+$sigmaSplit = New-Object System.Windows.Forms.SplitContainer
+$sigmaSplit.Dock = 'Fill'; $sigmaSplit.Orientation = 'Horizontal'; $sigmaSplit.SplitterDistance = 350
+$tabSigma.Controls.Add($sigmaSplit)
+
+$lblSigmaIn = New-Object System.Windows.Forms.Label
+$lblSigmaIn.Text = " Paste Sigma Rule (YAML):"; $lblSigmaIn.Dock = 'Top'; $lblSigmaIn.Height = 28
+$lblSigmaIn.ForeColor = $c_purple; $lblSigmaIn.Font = $fontHeader; $sigmaSplit.Panel1.Controls.Add($lblSigmaIn)
+
+$txtSigmaIn = New-MonoTextBox; $sigmaSplit.Panel1.Controls.Add($txtSigmaIn); $txtSigmaIn.BringToFront()
+
+$pnlSigmaCtrl = New-Object System.Windows.Forms.Panel
+$pnlSigmaCtrl.Dock = 'Bottom'; $pnlSigmaCtrl.Height = 48; $pnlSigmaCtrl.BackColor = $c_elevated
+$sigmaSplit.Panel1.Controls.Add($pnlSigmaCtrl)
+
+$btnConvertSigma = New-StyledButton "Convert to KQL" $c_green 160
+$btnConvertSigma.Location = New-Object System.Drawing.Point(15, 8); $pnlSigmaCtrl.Controls.Add($btnConvertSigma)
+
+$lblSigmaTime = New-Object System.Windows.Forms.Label
+$lblSigmaTime.Text = "Time:"; $lblSigmaTime.Location = New-Object System.Drawing.Point(190, 14)
+$lblSigmaTime.AutoSize = $true; $lblSigmaTime.ForeColor = $c_textMuted; $pnlSigmaCtrl.Controls.Add($lblSigmaTime)
+
+$cmbSigmaTime = New-Object System.Windows.Forms.ComboBox
+$cmbSigmaTime.DropDownStyle = 'DropDownList'; $cmbSigmaTime.Width = 100
+$cmbSigmaTime.Location = New-Object System.Drawing.Point(230, 10)
+@('1h','4h','24h','7d','30d','90d') | ForEach-Object { [void]$cmbSigmaTime.Items.Add($_) }
+$cmbSigmaTime.SelectedItem = '24h'; $pnlSigmaCtrl.Controls.Add($cmbSigmaTime)
+
+$btnSaveSigma = New-StyledButton "Save" $c_blue 80
+$btnSaveSigma.Location = New-Object System.Drawing.Point(350, 8); $pnlSigmaCtrl.Controls.Add($btnSaveSigma)
+
+$btnCopySigma = New-StyledButton "Copy" $c_textMuted 80
+$btnCopySigma.Location = New-Object System.Drawing.Point(440, 8); $pnlSigmaCtrl.Controls.Add($btnCopySigma)
+
+$lblSigmaOut = New-Object System.Windows.Forms.Label
+$lblSigmaOut.Text = " Generated KQL:"; $lblSigmaOut.Dock = 'Top'; $lblSigmaOut.Height = 28
+$lblSigmaOut.ForeColor = $c_blue; $lblSigmaOut.Font = $fontHeader; $sigmaSplit.Panel2.Controls.Add($lblSigmaOut)
+
+$txtSigmaOut = New-MonoTextBox; $sigmaSplit.Panel2.Controls.Add($txtSigmaOut); $txtSigmaOut.BringToFront()
+
+# ================================================================
+# TAB 4: YARA TO KQL
+# ================================================================
+$yaraSplit = New-Object System.Windows.Forms.SplitContainer
+$yaraSplit.Dock = 'Fill'; $yaraSplit.Orientation = 'Horizontal'; $yaraSplit.SplitterDistance = 350
+$tabYara.Controls.Add($yaraSplit)
+
+$lblYaraIn = New-Object System.Windows.Forms.Label
+$lblYaraIn.Text = " Paste YARA Rule:"; $lblYaraIn.Dock = 'Top'; $lblYaraIn.Height = 28
+$lblYaraIn.ForeColor = $c_orange; $lblYaraIn.Font = $fontHeader; $yaraSplit.Panel1.Controls.Add($lblYaraIn)
+
+$txtYaraIn = New-MonoTextBox; $yaraSplit.Panel1.Controls.Add($txtYaraIn); $txtYaraIn.BringToFront()
+
+$pnlYaraCtrl = New-Object System.Windows.Forms.Panel
+$pnlYaraCtrl.Dock = 'Bottom'; $pnlYaraCtrl.Height = 48; $pnlYaraCtrl.BackColor = $c_elevated
+$yaraSplit.Panel1.Controls.Add($pnlYaraCtrl)
+
+$btnConvertYara = New-StyledButton "Convert to KQL" $c_green 160
+$btnConvertYara.Location = New-Object System.Drawing.Point(15, 8); $pnlYaraCtrl.Controls.Add($btnConvertYara)
+
+$lblYaraTarget = New-Object System.Windows.Forms.Label
+$lblYaraTarget.Text = "Target:"; $lblYaraTarget.Location = New-Object System.Drawing.Point(190, 14)
+$lblYaraTarget.AutoSize = $true; $lblYaraTarget.ForeColor = $c_textMuted; $pnlYaraCtrl.Controls.Add($lblYaraTarget)
+
+$cmbYaraTarget = New-Object System.Windows.Forms.ComboBox
+$cmbYaraTarget.DropDownStyle = 'DropDownList'; $cmbYaraTarget.Width = 200
+$cmbYaraTarget.Location = New-Object System.Drawing.Point(240, 10)
+@('DeviceFileEvents','DeviceProcessEvents','DeviceEvents','DeviceImageLoadEvents') | ForEach-Object { [void]$cmbYaraTarget.Items.Add($_) }
+$cmbYaraTarget.SelectedIndex = 0; $pnlYaraCtrl.Controls.Add($cmbYaraTarget)
+
+$btnSaveYara = New-StyledButton "Save" $c_blue 80
+$btnSaveYara.Location = New-Object System.Drawing.Point(460, 8); $pnlYaraCtrl.Controls.Add($btnSaveYara)
+
+$btnCopyYara = New-StyledButton "Copy" $c_textMuted 80
+$btnCopyYara.Location = New-Object System.Drawing.Point(550, 8); $pnlYaraCtrl.Controls.Add($btnCopyYara)
+
+$lblYaraOut = New-Object System.Windows.Forms.Label
+$lblYaraOut.Text = " Generated KQL:"; $lblYaraOut.Dock = 'Top'; $lblYaraOut.Height = 28
+$lblYaraOut.ForeColor = $c_blue; $lblYaraOut.Font = $fontHeader; $yaraSplit.Panel2.Controls.Add($lblYaraOut)
+
+$txtYaraOut = New-MonoTextBox; $yaraSplit.Panel2.Controls.Add($txtYaraOut); $txtYaraOut.BringToFront()
+
+# ================================================================
+# TAB 5: DATATABLE CREATOR
+# ================================================================
+$dtSplit = New-Object System.Windows.Forms.SplitContainer
+$dtSplit.Dock = 'Fill'; $dtSplit.Orientation = 'Horizontal'; $dtSplit.SplitterDistance = 480
+$tabDatatable.Controls.Add($dtSplit)
+
+# Top panel: column defs + data grid + import controls
+$dtTopPanel = New-Object System.Windows.Forms.Panel; $dtTopPanel.Dock = 'Fill'; $dtTopPanel.BackColor = $c_surface
+$dtSplit.Panel1.Controls.Add($dtTopPanel)
+
+# Column definitions section
+$lblDtHeader = New-Object System.Windows.Forms.Label
+$lblDtHeader.Text = " Datatable Creator"; $lblDtHeader.Dock = 'Top'; $lblDtHeader.Height = 28
+$lblDtHeader.ForeColor = $c_green; $lblDtHeader.Font = $fontHeader; $dtTopPanel.Controls.Add($lblDtHeader)
+
+$dtConfigPanel = New-Object System.Windows.Forms.Panel
+$dtConfigPanel.Dock = 'Top'; $dtConfigPanel.Height = 72; $dtConfigPanel.BackColor = $c_elevated
+$dtTopPanel.Controls.Add($dtConfigPanel)
+
+$lblVarName = New-Object System.Windows.Forms.Label
+$lblVarName.Text = "Variable Name:"; $lblVarName.Location = New-Object System.Drawing.Point(15, 8)
+$lblVarName.AutoSize = $true; $lblVarName.ForeColor = $c_textMain; $dtConfigPanel.Controls.Add($lblVarName)
+
+$txtVarName = New-Object System.Windows.Forms.TextBox
+$txtVarName.Location = New-Object System.Drawing.Point(120, 5); $txtVarName.Width = 150
+$txtVarName.Text = "customTable"; $txtVarName.BackColor = $c_bg; $txtVarName.ForeColor = $c_textMain
+$txtVarName.BorderStyle = 'FixedSingle'; $dtConfigPanel.Controls.Add($txtVarName)
+
+# Column definition: Name + Type + Add button
+$lblColName = New-Object System.Windows.Forms.Label
+$lblColName.Text = "Column:"; $lblColName.Location = New-Object System.Drawing.Point(290, 8)
+$lblColName.AutoSize = $true; $lblColName.ForeColor = $c_textMain; $dtConfigPanel.Controls.Add($lblColName)
+
+$txtColName = New-Object System.Windows.Forms.TextBox
+$txtColName.Location = New-Object System.Drawing.Point(345, 5); $txtColName.Width = 130
+$txtColName.BackColor = $c_bg; $txtColName.ForeColor = $c_textMain; $txtColName.BorderStyle = 'FixedSingle'
+$dtConfigPanel.Controls.Add($txtColName)
+
+$cmbColType = New-Object System.Windows.Forms.ComboBox
+$cmbColType.DropDownStyle = 'DropDownList'; $cmbColType.Width = 100
+$cmbColType.Location = New-Object System.Drawing.Point(485, 5)
+@('string','int','long','real','datetime','bool','dynamic','timespan','guid','decimal') | ForEach-Object { [void]$cmbColType.Items.Add($_) }
+$cmbColType.SelectedItem = 'string'; $dtConfigPanel.Controls.Add($cmbColType)
+
+$btnAddCol = New-StyledButton "+ Column" $c_green 85 26
+$btnAddCol.Location = New-Object System.Drawing.Point(595, 5); $dtConfigPanel.Controls.Add($btnAddCol)
+
+$btnRemoveCol = New-StyledButton "- Column" $c_red 85 26
+$btnRemoveCol.Location = New-Object System.Drawing.Point(690, 5); $dtConfigPanel.Controls.Add($btnRemoveCol)
+
+# Let variables
+$lblLetVars = New-Object System.Windows.Forms.Label
+$lblLetVars.Text = "Let Vars (name=value; ...):"; $lblLetVars.Location = New-Object System.Drawing.Point(15, 40)
+$lblLetVars.AutoSize = $true; $lblLetVars.ForeColor = $c_textMuted; $dtConfigPanel.Controls.Add($lblLetVars)
+
+$txtLetVars = New-Object System.Windows.Forms.TextBox
+$txtLetVars.Location = New-Object System.Drawing.Point(185, 37); $txtLetVars.Width = 400
+$txtLetVars.BackColor = $c_bg; $txtLetVars.ForeColor = $c_textMain; $txtLetVars.BorderStyle = 'FixedSingle'
+$dtConfigPanel.Controls.Add($txtLetVars)
+
+# Import buttons
+$btnImportCsv = New-StyledButton "Import CSV" $c_blue 110 26
+$btnImportCsv.Location = New-Object System.Drawing.Point(600, 37); $dtConfigPanel.Controls.Add($btnImportCsv)
+
+$btnImportTxt = New-StyledButton "Import TXT" $c_blue 110 26
+$btnImportTxt.Location = New-Object System.Drawing.Point(720, 37); $dtConfigPanel.Controls.Add($btnImportTxt)
+
+# Data grid
+$dgvData = New-Object System.Windows.Forms.DataGridView
+$dgvData.Dock = 'Fill'; $dgvData.AllowUserToAddRows = $true; $dgvData.AllowUserToDeleteRows = $true
+$dgvData.AutoSizeColumnsMode = 'Fill'; $dgvData.BackgroundColor = $c_bg; $dgvData.GridColor = $c_border
+$dgvData.BorderStyle = 'None'; $dgvData.RowHeadersWidth = 40
+$dgvData.DefaultCellStyle.BackColor = $c_bg
+$dgvData.DefaultCellStyle.ForeColor = $c_textMain
+$dgvData.DefaultCellStyle.SelectionBackColor = $c_elevated
+$dgvData.DefaultCellStyle.SelectionForeColor = $c_blue
+$dgvData.ColumnHeadersDefaultCellStyle.BackColor = $c_surface
+$dgvData.ColumnHeadersDefaultCellStyle.ForeColor = $c_blue
+$dgvData.ColumnHeadersDefaultCellStyle.Font = $fontUIBold
+$dgvData.EnableHeadersVisualStyles = $false
+$dgvData.RowHeadersDefaultCellStyle.BackColor = $c_surface
+$dgvData.RowHeadersDefaultCellStyle.ForeColor = $c_textMuted
+$dtTopPanel.Controls.Add($dgvData)
+$dgvData.BringToFront()
+
+# Datatable controls panel at bottom of top
+$pnlDtCtrl = New-Object System.Windows.Forms.Panel
+$pnlDtCtrl.Dock = 'Bottom'; $pnlDtCtrl.Height = 42; $pnlDtCtrl.BackColor = $c_elevated
+$dtSplit.Panel1.Controls.Add($pnlDtCtrl)
+
+$btnBuildDt = New-StyledButton "Build Datatable" $c_green 150
+$btnBuildDt.Location = New-Object System.Drawing.Point(15, 5); $pnlDtCtrl.Controls.Add($btnBuildDt)
+
+$btnSaveDt = New-StyledButton "Save" $c_blue 80
+$btnSaveDt.Location = New-Object System.Drawing.Point(175, 5); $pnlDtCtrl.Controls.Add($btnSaveDt)
+
+$btnCopyDt = New-StyledButton "Copy" $c_textMuted 80
+$btnCopyDt.Location = New-Object System.Drawing.Point(265, 5); $pnlDtCtrl.Controls.Add($btnCopyDt)
+
+$btnClearDt = New-StyledButton "Clear Grid" $c_orange 100
+$btnClearDt.Location = New-Object System.Drawing.Point(355, 5); $pnlDtCtrl.Controls.Add($btnClearDt)
+
+# Bottom: output
+$lblDtOut = New-Object System.Windows.Forms.Label
+$lblDtOut.Text = " Generated KQL:"; $lblDtOut.Dock = 'Top'; $lblDtOut.Height = 28
+$lblDtOut.ForeColor = $c_blue; $lblDtOut.Font = $fontHeader; $dtSplit.Panel2.Controls.Add($lblDtOut)
+
+$txtDtOut = New-MonoTextBox; $dtSplit.Panel2.Controls.Add($txtDtOut); $txtDtOut.BringToFront()
+
+# Column metadata storage for datatable tab
+$script:DtColumns = [System.Collections.Generic.List[hashtable]]::new()
+
+# ================================================================
+# APPLY THEME
+# ================================================================
+Apply-Theme $form
+
+# ================================================================
+# EVENT HANDLERS
+# ================================================================
+
+# ---- Tab 1: Table selection changed ----
+$cmbTable.Add_SelectedIndexChanged({
+    $tblName = $cmbTable.SelectedItem
+    $def = $script:TableDefinitions[$tblName]
+    if (-not $def) { return }
+
+    # Update specifics
+    $specPanel.Controls.Clear(); $script:SpecificsControls = @{}
+    $sx = 0; $sy = 0
+    foreach ($k in ($def.Specifics.Keys | Sort-Object)) {
+        $lbl = New-Object System.Windows.Forms.Label
+        $lbl.Text = "${k}:"; $lbl.Location = New-Object System.Drawing.Point($sx, ($sy + 3))
+        $lbl.AutoSize = $true; $lbl.ForeColor = $c_textMain; $lbl.Font = $fontUI
+        $specPanel.Controls.Add($lbl)
+        $cmb = New-Object System.Windows.Forms.ComboBox
+        $cmb.Location = New-Object System.Drawing.Point(($sx + 80), $sy); $cmb.Width = 160
+        $cmb.DropDownStyle = 'DropDown'; $cmb.BackColor = $c_bg; $cmb.ForeColor = $c_textMain
+        foreach ($v in $def.Specifics[$k]) { [void]$cmb.Items.Add($v) }
+        $specPanel.Controls.Add($cmb); $script:SpecificsControls[$k] = $cmb
+        $sx += 260
+        if ($sx -gt 300) { $sx = 0; $sy += 30 }
+    }
+
+    # Update parse options
+    $parsePanel.Controls.Clear(); $script:ParseCheckboxes = @{}
+    $px = 0; $py = 0
+    foreach ($colName in ($def.ParseableColumns.Keys | Sort-Object)) {
+        $pInfo = $def.ParseableColumns[$colName]
+        $chk = New-Object System.Windows.Forms.CheckBox
+        $chk.Text = "$colName ($($pInfo.Label))"; $chk.Tag = $colName
+        $chk.Location = New-Object System.Drawing.Point($px, $py)
+        $chk.AutoSize = $true; $chk.ForeColor = $c_purple; $chk.Font = $fontUI
+        $parsePanel.Controls.Add($chk); $script:ParseCheckboxes[$colName] = $chk
+        $px += 270
+        if ($px -gt 300) { $px = 0; $py += 22 }
+    }
+    # Resize parse panel if needed
+    $neededHeight = if ($py -gt 0) { $py + 30 } else { 28 }
+    if ($def.ParseableColumns.Count -eq 0) { $neededHeight = 24 }
+    $parsePanel.Height = [Math]::Max($neededHeight, 24)
+
+    # Update column checklist
+    $lstCols.Items.Clear()
+    foreach ($col in $def.AvailableColumns) {
+        $idx = $lstCols.Items.Add($col)
+        if ($col -in $def.DefaultColumns) { $lstCols.SetItemChecked($idx, $true) }
+    }
+
+    Show-Status $lblStatus " Table: $tblName | Columns: $($def.AvailableColumns.Count) | Parseable: $($def.ParseableColumns.Count) | Storage: $($script:StorageMode.ToUpper())" $c_textMuted
+})
+
+# Trigger initial load
+if ($cmbTable.Items.Count -gt 0) {
+    $cmbTable.SelectedIndex = 0
+}
+
+# ---- Tab 1: Build Query ----
+$btnBuild.Add_Click({
+    $specs = @{}
+    foreach ($k in $script:SpecificsControls.Keys) { $specs[$k] = $script:SpecificsControls[$k].Text }
+
+    $cols = @()
+    for ($i = 0; $i -lt $lstCols.Items.Count; $i++) {
+        if ($lstCols.GetItemChecked($i)) { $cols += $lstCols.Items[$i] }
+    }
+
+    $parseCols = @()
+    foreach ($colName in $script:ParseCheckboxes.Keys) {
+        if ($script:ParseCheckboxes[$colName].Checked) {
+            $parseCols += @{ Column = $colName; Strategy = 'auto'; Fields = @() }
+        }
+    }
+
+    $state = [PSCustomObject]@{
+        Name         = $txtName.Text
+        Tags         = $txtTags.Text
+        TableName    = $cmbTable.SelectedItem
+        TimeRange    = $cmbTime.SelectedItem
+        Computer     = $txtComputer.Text
+        User         = $txtUser.Text
+        F_IP         = $txtIp.Text
+        F_Process    = $txtProc.Text
+        F_Cmd        = $txtCmd.Text
+        F_Hash       = $txtHash.Text
+        Specifics    = $specs
+        Columns      = $cols
+        ParseColumns = $parseCols
+        OutputMode   = if ($rdoSummarized.Checked) { 'Summarized' } else { 'Detailed' }
+        Limit        = [int]$numLimit.Value
+    }
+    $txtKql.Text = Build-KqlQuery -State $state
+    Show-Status $lblStatus " Query built: $($cmbTable.SelectedItem) | $(Get-Date -Format 'HH:mm:ss')" $c_green
+})
+
+# ---- Tab 1: Save ----
+$btnSave1.Add_Click({
+    if (-not $txtKql.Text -or -not $txtName.Text) {
+        [System.Windows.Forms.MessageBox]::Show("Query Name and generated KQL are required.", "Validation", 0, 48)
+        return
+    }
+    $ok = Save-Query -Name $txtName.Text -Tags $txtTags.Text -TableName $cmbTable.SelectedItem -SourceTab 'QueryBuilder' -KqlText $txtKql.Text
+    if ($ok) { Show-Status $lblStatus " Saved: $($txtName.Text)" $c_green }
+    else     { Show-Status $lblStatus " Save failed" $c_red }
+})
+
+# ---- Tab 1: Copy ----
+$btnCopy1.Add_Click({
+    if ($txtKql.Text) {
+        [System.Windows.Forms.Clipboard]::SetText($txtKql.Text)
+        Show-Status $lblStatus " Copied to clipboard" $c_blue
+    }
+})
+
+# ---- Tab 1: Clear ----
+$btnClear1.Add_Click({
+    $txtName.Text = ''; $txtTags.Text = ''; $txtComputer.Text = ''; $txtUser.Text = ''
+    $txtIp.Text = ''; $txtProc.Text = ''; $txtCmd.Text = ''; $txtHash.Text = ''
+    $txtKql.Text = ''
+    foreach ($k in $script:SpecificsControls.Keys) { $script:SpecificsControls[$k].Text = '' }
+    Show-Status $lblStatus " Cleared" $c_textMuted
+})
+
+# ---- Tab 2: Snort Convert ----
+$btnConvertSnort.Add_Click({
+    if (-not $txtSnortIn.Text.Trim()) { return }
+    try {
+        $txtSnortOut.Text = Convert-SnortToKql -RuleText $txtSnortIn.Text -TargetTable $cmbSnortTarget.SelectedItem -TimeRange '1d'
+        Show-Status $lblStatus " Snort conversion complete" $c_green
+    } catch {
+        $txtSnortOut.Text = "// ERROR: $($_.Exception.Message)"
+        Show-Status $lblStatus " Snort conversion error" $c_red
+    }
+})
+
+$btnSaveSnort.Add_Click({
+    if (-not $txtSnortOut.Text) { return }
+    $saveName = "Snort_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    $ok = Save-Query -Name $saveName -SourceTab 'SnortConverter' -KqlText $txtSnortOut.Text
+    if ($ok) { Show-Status $lblStatus " Saved: $saveName" $c_green }
+})
+
+$btnCopySnort.Add_Click({
+    if ($txtSnortOut.Text) { [System.Windows.Forms.Clipboard]::SetText($txtSnortOut.Text); Show-Status $lblStatus " Copied" $c_blue }
+})
+
+# ---- Tab 3: Sigma Convert ----
+$btnConvertSigma.Add_Click({
+    if (-not $txtSigmaIn.Text.Trim()) { return }
+    try {
+        $txtSigmaOut.Text = Convert-SigmaToKql -RuleText $txtSigmaIn.Text -TimeRange $cmbSigmaTime.SelectedItem
+        Show-Status $lblStatus " Sigma conversion complete" $c_green
+    } catch {
+        $txtSigmaOut.Text = "// ERROR: $($_.Exception.Message)`r`n// $($_.ScriptStackTrace)"
+        Show-Status $lblStatus " Sigma conversion error" $c_red
+    }
+})
+
+$btnSaveSigma.Add_Click({
+    if (-not $txtSigmaOut.Text) { return }
+    $saveName = "Sigma_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    $ok = Save-Query -Name $saveName -SourceTab 'SigmaConverter' -KqlText $txtSigmaOut.Text
+    if ($ok) { Show-Status $lblStatus " Saved: $saveName" $c_green }
+})
+
+$btnCopySigma.Add_Click({
+    if ($txtSigmaOut.Text) { [System.Windows.Forms.Clipboard]::SetText($txtSigmaOut.Text); Show-Status $lblStatus " Copied" $c_blue }
+})
+
+# ---- Tab 4: YARA Convert ----
+$btnConvertYara.Add_Click({
+    if (-not $txtYaraIn.Text.Trim()) { return }
+    try {
+        $txtYaraOut.Text = Convert-YaraToKql -RuleText $txtYaraIn.Text -TargetTable $cmbYaraTarget.SelectedItem -TimeRange '1d'
+        Show-Status $lblStatus " YARA conversion complete" $c_green
+    } catch {
+        $txtYaraOut.Text = "// ERROR: $($_.Exception.Message)`r`n// $($_.ScriptStackTrace)"
+        Show-Status $lblStatus " YARA conversion error" $c_red
+    }
+})
+
+$btnSaveYara.Add_Click({
+    if (-not $txtYaraOut.Text) { return }
+    $saveName = "YARA_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    $ok = Save-Query -Name $saveName -SourceTab 'YaraConverter' -KqlText $txtYaraOut.Text
+    if ($ok) { Show-Status $lblStatus " Saved: $saveName" $c_green }
+})
+
+$btnCopyYara.Add_Click({
+    if ($txtYaraOut.Text) { [System.Windows.Forms.Clipboard]::SetText($txtYaraOut.Text); Show-Status $lblStatus " Copied" $c_blue }
+})
+
+# ---- Tab 5: Datatable ----
+$btnAddCol.Add_Click({
+    $colName = $txtColName.Text.Trim()
+    if (-not $colName) {
+        [System.Windows.Forms.MessageBox]::Show("Enter a column name.", "Validation", 0, 48)
+        return
+    }
+    if ($colName -notmatch '^[a-zA-Z_]\w*$') {
+        [System.Windows.Forms.MessageBox]::Show("Column name must be alphanumeric (letters, digits, underscores), starting with a letter or underscore.", "Validation", 0, 48)
+        return
+    }
+    $colType = $cmbColType.SelectedItem
+    $script:DtColumns.Add(@{ Name = $colName; Type = $colType })
+    $dgvData.Columns.Add($colName, "$colName ($colType)")
+    $txtColName.Text = ''
+    Show-Status $lblStatus " Column added: $colName ($colType)" $c_green
+})
+
+$btnRemoveCol.Add_Click({
+    if ($dgvData.Columns.Count -eq 0) { return }
+    $lastIdx = $dgvData.Columns.Count - 1
+    $dgvData.Columns.RemoveAt($lastIdx)
+    if ($script:DtColumns.Count -gt 0) { $script:DtColumns.RemoveAt($script:DtColumns.Count - 1) }
+    Show-Status $lblStatus " Last column removed" $c_orange
+})
+
+$btnImportCsv.Add_Click({
+    $ofd = New-Object System.Windows.Forms.OpenFileDialog
+    $ofd.Filter = "CSV Files (*.csv)|*.csv|All Files (*.*)|*.*"
+    $ofd.Title = "Import CSV for Datatable"
+    if ($ofd.ShowDialog() -eq 'OK') {
+        try {
+            $csvText = Get-Content $ofd.FileName -Raw -Encoding UTF8
+            $result = Import-CsvForDatatable -CsvText $csvText
+
+            # Reset grid
+            $dgvData.Columns.Clear(); $dgvData.Rows.Clear()
+            $script:DtColumns = [System.Collections.Generic.List[hashtable]]::new()
+
+            foreach ($col in $result.Columns) {
+                $script:DtColumns.Add($col)
+                [void]$dgvData.Columns.Add($col.Name, "$($col.Name) ($($col.Type))")
+            }
+            foreach ($row in $result.Rows) {
+                [void]$dgvData.Rows.Add($row)
+            }
+            Show-Status $lblStatus " Imported $($result.Rows.Count) rows from CSV" $c_green
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("CSV import error: $($_.Exception.Message)", "Error", 0, 16)
+        }
+    }
+})
+
+$btnImportTxt.Add_Click({
+    $ofd = New-Object System.Windows.Forms.OpenFileDialog
+    $ofd.Filter = "Text Files (*.txt)|*.txt|All Files (*.*)|*.*"
+    $ofd.Title = "Import TXT for Datatable (line-delimited)"
+    if ($ofd.ShowDialog() -eq 'OK') {
+        try {
+            $txtContent = Get-Content $ofd.FileName -Raw -Encoding UTF8
+
+            # Ask for column name
+            $colNameInput = [Microsoft.VisualBasic.Interaction]::InputBox("Column name for imported values:", "TXT Import", "Value")
+            if (-not $colNameInput) { $colNameInput = "Value" }
+
+            $result = Import-TxtForDatatable -TxtText $txtContent -ColumnName $colNameInput
+
+            # Reset grid
+            $dgvData.Columns.Clear(); $dgvData.Rows.Clear()
+            $script:DtColumns = [System.Collections.Generic.List[hashtable]]::new()
+
+            foreach ($col in $result.Columns) {
+                $script:DtColumns.Add($col)
+                [void]$dgvData.Columns.Add($col.Name, "$($col.Name) ($($col.Type))")
+            }
+            foreach ($row in $result.Rows) {
+                [void]$dgvData.Rows.Add($row)
+            }
+            Show-Status $lblStatus " Imported $($result.Rows.Count) lines from TXT" $c_green
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("TXT import error: $($_.Exception.Message)", "Error", 0, 16)
+        }
+    }
+})
+
+$btnBuildDt.Add_Click({
+    if ($script:DtColumns.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("Add at least one column before building.", "Validation", 0, 48)
+        return
+    }
+
+    # Collect rows from grid
+    $rows = @()
+    for ($r = 0; $r -lt $dgvData.Rows.Count; $r++) {
+        if ($dgvData.Rows[$r].IsNewRow) { continue }
+        $rowData = @()
+        for ($c = 0; $c -lt $dgvData.Columns.Count; $c++) {
+            $cellVal = $dgvData.Rows[$r].Cells[$c].Value
+            $rowData += if ($null -eq $cellVal) { '' } else { $cellVal.ToString() }
+        }
+        # Skip fully empty rows
+        if (($rowData | Where-Object { $_ -ne '' }).Count -eq 0) { continue }
+        $rows += ,$rowData
+    }
+
+    # Parse let variables
+    $lets = @{}
+    if ($txtLetVars.Text.Trim()) {
+        foreach ($pair in ($txtLetVars.Text -split ';')) {
+            $kv = $pair.Trim() -split '=', 2
+            if ($kv.Count -eq 2) { $lets[$kv[0].Trim()] = $kv[1].Trim() }
+        }
+    }
+
+    $varName = if ($txtVarName.Text.Trim()) { $txtVarName.Text.Trim() } else { 'customTable' }
+
+    $txtDtOut.Text = Build-KqlDatatable -TableVarName $varName -Columns $script:DtColumns.ToArray() -Rows $rows -AdditionalLets $lets
+    Show-Status $lblStatus " Datatable built: $($rows.Count) rows, $($script:DtColumns.Count) columns" $c_green
+})
+
+$btnSaveDt.Add_Click({
+    if (-not $txtDtOut.Text) { return }
+    $saveName = "Datatable_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    $ok = Save-Query -Name $saveName -SourceTab 'DatatableCreator' -KqlText $txtDtOut.Text
+    if ($ok) { Show-Status $lblStatus " Saved: $saveName" $c_green }
+})
+
+$btnCopyDt.Add_Click({
+    if ($txtDtOut.Text) { [System.Windows.Forms.Clipboard]::SetText($txtDtOut.Text); Show-Status $lblStatus " Copied" $c_blue }
+})
+
+$btnClearDt.Add_Click({
+    $dgvData.Rows.Clear(); $dgvData.Columns.Clear()
+    $script:DtColumns = [System.Collections.Generic.List[hashtable]]::new()
+    $txtDtOut.Text = ''; $txtVarName.Text = 'customTable'; $txtLetVars.Text = ''
+    Show-Status $lblStatus " Grid cleared" $c_textMuted
+})
+
+# ================================================================
+# DARK TITLE BAR (Windows 10/11)
+# ================================================================
+$form.Add_HandleCreated({
+    $darkMode = 1
+    [DarkModeHelper]::DwmSetWindowAttribute($form.Handle, 20, [ref]$darkMode, 4) | Out-Null
+    [DarkModeHelper]::DwmSetWindowAttribute($form.Handle, 19, [ref]$darkMode, 4) | Out-Null
+})
+
+# Add VB assembly for InputBox on TXT import
+try { Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction SilentlyContinue } catch {}
+
+# ================================================================
+# LAUNCH
+# ================================================================
+[void]$form.ShowDialog()

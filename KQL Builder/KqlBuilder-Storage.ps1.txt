@@ -1,0 +1,181 @@
+<#
+.SYNOPSIS
+    Persistence layer for KQL Builder.
+    Primary: Microsoft Access (.accdb) via ACE OLEDB.
+    Fallback: JSON flat file.
+.NOTES
+    Tables: SavedQueries, SavedConversions, SavedDatatables
+#>
+
+$script:DataDir   = Join-Path $env:USERPROFILE 'SecIntel'
+$script:AccdbPath = Join-Path $script:DataDir 'KqlBuilder.accdb'
+$script:JsonPath  = Join-Path $script:DataDir 'KqlBuilder.json'
+$script:StorageMode = 'json'
+$script:OleDbConnStr = $null
+
+function Initialize-Storage {
+    [CmdletBinding()]
+    param([switch]$Reset)
+
+    if (-not (Test-Path $script:DataDir)) {
+        New-Item -ItemType Directory -Path $script:DataDir -Force | Out-Null
+    }
+    if ($Reset) {
+        Remove-Item $script:AccdbPath, $script:JsonPath -Force -ErrorAction SilentlyContinue
+    }
+
+    # Try Access first
+    $accessOk = $false
+    if (-not (Test-Path $script:AccdbPath)) {
+        try {
+            $catalog = New-Object -ComObject ADOX.Catalog
+            $catalog.Create("Provider=Microsoft.ACE.OLEDB.12.0;Data Source=$script:AccdbPath;")
+            [System.Runtime.InteropServices.Marshal]::ReleaseComObject($catalog) | Out-Null
+            $accessOk = $true
+        } catch {
+            $accessOk = $false
+        }
+    } else {
+        $accessOk = $true
+    }
+
+    if ($accessOk) {
+        try {
+            $script:OleDbConnStr = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source=$script:AccdbPath;Persist Security Info=False;"
+            $conn = New-Object System.Data.OleDb.OleDbConnection $script:OleDbConnStr
+            $conn.Open()
+
+            $schema = $conn.GetSchema('Tables')
+            $existingTables = @()
+            foreach ($row in $schema.Rows) { $existingTables += $row['TABLE_NAME'] }
+
+            # SavedQueries table
+            if ('SavedQueries' -notin $existingTables) {
+                $cmd = $conn.CreateCommand()
+                $cmd.CommandText = @"
+CREATE TABLE SavedQueries (
+    Id COUNTER PRIMARY KEY,
+    QueryName TEXT(255),
+    Tags TEXT(500),
+    TableName TEXT(100),
+    SourceTab TEXT(50),
+    KqlText LONGTEXT,
+    CreatedDate DATETIME,
+    LastModified DATETIME
+)
+"@
+                [void]$cmd.ExecuteNonQuery()
+            }
+
+            $conn.Close()
+            $script:StorageMode = 'access'
+        } catch {
+            $script:StorageMode = 'json'
+        }
+    } else {
+        $script:StorageMode = 'json'
+    }
+
+    # Initialize JSON fallback
+    if ($script:StorageMode -eq 'json') {
+        if (-not (Test-Path $script:JsonPath)) {
+            '[]' | Set-Content $script:JsonPath -Encoding UTF8
+        }
+    }
+}
+
+function Save-Query {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [string]$Tags = '',
+        [string]$TableName = '',
+        [Parameter(Mandatory)][string]$SourceTab,
+        [Parameter(Mandatory)][string]$KqlText
+    )
+
+    $now = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+
+    if ($script:StorageMode -eq 'access') {
+        try {
+            $conn = New-Object System.Data.OleDb.OleDbConnection $script:OleDbConnStr
+            $conn.Open()
+            $cmd = $conn.CreateCommand()
+            $cmd.CommandText = "INSERT INTO SavedQueries (QueryName, Tags, TableName, SourceTab, KqlText, CreatedDate, LastModified) VALUES (?, ?, ?, ?, ?, ?, ?)"
+            [void]$cmd.Parameters.AddWithValue('@p1', $Name)
+            [void]$cmd.Parameters.AddWithValue('@p2', $Tags)
+            [void]$cmd.Parameters.AddWithValue('@p3', $TableName)
+            [void]$cmd.Parameters.AddWithValue('@p4', $SourceTab)
+            [void]$cmd.Parameters.AddWithValue('@p5', $KqlText)
+            [void]$cmd.Parameters.AddWithValue('@p6', $now)
+            [void]$cmd.Parameters.AddWithValue('@p7', $now)
+            [void]$cmd.ExecuteNonQuery()
+            $conn.Close()
+            return $true
+        } catch {
+            return $false
+        }
+    } else {
+        try {
+            $raw = Get-Content $script:JsonPath -Raw -ErrorAction SilentlyContinue
+            if ([string]::IsNullOrWhiteSpace($raw)) { $raw = '[]' }
+            $existing = @(ConvertFrom-Json $raw)
+            $newId = if ($existing.Count -gt 0) { ($existing | Measure-Object Id -Maximum).Maximum + 1 } else { 1 }
+            $entry = [PSCustomObject]@{
+                Id           = $newId
+                QueryName    = $Name
+                Tags         = $Tags
+                TableName    = $TableName
+                SourceTab    = $SourceTab
+                KqlText      = $KqlText
+                CreatedDate  = $now
+                LastModified = $now
+            }
+            $list = @($existing) + $entry
+            $list | ConvertTo-Json -Depth 5 | Set-Content $script:JsonPath -Encoding UTF8
+            return $true
+        } catch {
+            return $false
+        }
+    }
+}
+
+function Get-SavedQueries {
+    [CmdletBinding()]
+    param(
+        [string]$SourceTab = ''
+    )
+
+    if ($script:StorageMode -eq 'access') {
+        try {
+            $conn = New-Object System.Data.OleDb.OleDbConnection $script:OleDbConnStr
+            $conn.Open()
+            $cmd = $conn.CreateCommand()
+            if ($SourceTab) {
+                $cmd.CommandText = "SELECT * FROM SavedQueries WHERE SourceTab = ? ORDER BY LastModified DESC"
+                [void]$cmd.Parameters.AddWithValue('@p1', $SourceTab)
+            } else {
+                $cmd.CommandText = "SELECT * FROM SavedQueries ORDER BY LastModified DESC"
+            }
+            $adapter = New-Object System.Data.OleDb.OleDbDataAdapter $cmd
+            $dt = New-Object System.Data.DataTable
+            [void]$adapter.Fill($dt)
+            $conn.Close()
+            return $dt
+        } catch {
+            return $null
+        }
+    } else {
+        try {
+            $raw = Get-Content $script:JsonPath -Raw -ErrorAction SilentlyContinue
+            if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
+            $all = @(ConvertFrom-Json $raw)
+            if ($SourceTab) {
+                return @($all | Where-Object { $_.SourceTab -eq $SourceTab })
+            }
+            return $all
+        } catch {
+            return @()
+        }
+    }
+}
